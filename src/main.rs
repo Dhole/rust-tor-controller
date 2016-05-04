@@ -2,7 +2,9 @@
 extern crate log;
 extern crate env_logger;
 extern crate regex;
+extern crate rustc_serialize;
 
+use std::fmt;
 use std::path::Path;
 use std::net::{SocketAddr, TcpStream, Shutdown};
 use std::io::{Read, Write};
@@ -12,6 +14,7 @@ use std::io::{BufReader, BufRead, BufWriter};
 use std::collections::HashMap;
 
 use regex::Regex;
+use rustc_serialize::hex::{ToHex, FromHex};
 
 //enum Auth {
 //    None,
@@ -40,6 +43,12 @@ struct ProtocolInfo {
 //    cookie_files: Vec<Path>,
 //    auth_methods: Vec<String>,
     cookie_files: Vec<String>,
+}
+
+#[derive(Debug)]
+struct AuthChallenge {
+    server_hash: [u8; 32],
+    server_nonce: [u8; 32],
 }
 
 struct Connection<T: Read + Write> {
@@ -74,6 +83,7 @@ impl<T: Read + Write> Controller<T> {
     fn authenticate(&mut self) {
         unimplemented!();
     }
+
     fn raw_cmd(&mut self, cmd: &str) -> Vec<String> {
         debug!("{}", cmd);
         self.con.buf_writer.write_all(cmd.as_bytes()).unwrap();
@@ -82,21 +92,24 @@ impl<T: Read + Write> Controller<T> {
         let mut raw_line = String::new();
         let mut reply = Vec::new();
 
+        /*
         self.con.buf_reader.read_line(&mut raw_line).unwrap();
         {
             let line = &raw_line[..raw_line.len()-2];
             debug!("{}", line);
             reply.push(line.to_string());
         }
-        let status_code = &raw_line.clone()[..3];
-        raw_line.clear();
+        */
+        //let status_code = &raw_line.clone()[..3];
+        //raw_line.clear();
+        let status_code_reply = "250";
 
         while self.con.buf_reader.read_line(&mut raw_line).unwrap() > 0 {
             {
                 let line = &raw_line[..raw_line.len()-2];
                 debug!("{}", line);
                 reply.push(line.to_string());
-                if &line[..3] != status_code {
+                if &line[..3] != status_code_reply {
                     panic!("Reply Error");
                 }
                 if &line[3..4] == " " {
@@ -107,6 +120,7 @@ impl<T: Read + Write> Controller<T> {
         }
         reply
     }
+
     fn protocolinfo(&mut self) -> ProtocolInfo {
         let reply = self.raw_cmd("PROTOCOLINFO");
         // regex for QuotedString = (\\.|[^\"])*
@@ -124,6 +138,10 @@ impl<T: Read + Write> Controller<T> {
             .unwrap();
         let prot_inf = re_protocolinfo.captures(reply[0].as_str()).unwrap();
         let version = prot_inf.name("version").unwrap().parse::<u8>().unwrap();
+        match version {
+            1 => (),
+            _ => panic!("Version {} not supported", version),
+        }
 
         let mut tor_version = String::new();
         let mut cookie_files = Vec::new();
@@ -153,8 +171,8 @@ impl<T: Read + Write> Controller<T> {
                     let opt_arguments = ver.name("opt_arguments").unwrap();
                     //debug!("Tor version={}, optional args={}", tor_version, opt_arguments);
                 },
-                "250" => debug!("OK"),
-                _ => (),
+                "250" => debug!("OK"), // End of PROTOCOLINFO reply
+                _ => (), // Unrecognized InfoLine
             } 
         }
         //debug!("version = {}", version);
@@ -164,6 +182,30 @@ impl<T: Read + Write> Controller<T> {
             auth_methods: auth_methods,
             cookie_files: cookie_files,
         }
+    }
+
+    fn authchallenge(&mut self, client_nonce: &[u8; 32]) -> AuthChallenge {
+        let reply = self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}", 
+                                         client_nonce.to_hex()).as_str());
+        let re_authchallenge =
+            Regex::new("^250 AUTHCHALLENGE SERVERHASH=(?P<server_hash>[0-9A-F]{64}) SERVERNONCE=(?P<server_nonce>[0-9A-F]{64})$")
+            .unwrap();
+        let server_challenge = re_authchallenge.captures(reply[0].as_str()).unwrap();
+        let server_hash = server_challenge.name("server_hash").unwrap();
+        let server_nonce = server_challenge.name("server_nonce").unwrap();
+
+        let mut res = AuthChallenge {
+            server_hash: [0; 32],
+            server_nonce: [0; 32],
+        };
+        res.server_hash.clone_from_slice(server_hash.from_hex().unwrap().as_slice());
+        res.server_nonce.clone_from_slice(server_nonce.from_hex().unwrap().as_slice());
+
+        res
+    }
+
+    fn authenticate(&mut self, pwd: &[u8]) {
+        let reply = self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str());
     }
 //    fn connect(mut &self) {
 //        match self.connection {
@@ -184,6 +226,9 @@ fn main() {
     //controller.assert("PROTOCOLINFO");
     let protocolinfo = controller.protocolinfo();
     debug!("{:?}", protocolinfo);
+    let client_hash: &[u8; 32] = &[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32];
+    let authchallenge = controller.authchallenge(client_hash);
+    debug!("{:?}", authchallenge);
 //    controller.write("PROTOCOLINFO\r\n");
 //    controller.write("PROTOCOLINFO\r\n");
 }
