@@ -120,17 +120,28 @@ impl<T: Read + Write> Controller<T> {
         // let status_code = &raw_line.clone()[..3];
         // raw_line.clear();
         let status_code_reply = "250";
+        let mut multi_line = false;
 
         while self.con.buf_reader.read_line(&mut raw_line).unwrap() > 0 {
             {
-                let line = &raw_line[..raw_line.len() - 2];
+                let line = &raw_line[..raw_line.len() - 2]; // remove "\r\n"
                 debug!("{}", line);
                 reply.push(line.to_string());
-                if &line[..3] != status_code_reply {
-                    panic!("Reply Error");
-                }
-                if &line[3..4] == " " {
-                    break;
+
+                if multi_line {
+                    if line == "." {
+                        multi_line = false;
+                    }
+                } else {
+                    if &line[..3] != status_code_reply {
+                        panic!("Reply Error");
+                    }
+                    match &line[3..4] {
+                        "-" => (),
+                        " " => break,
+                        "+" => multi_line = true,
+                        _ => panic!("Reply Error"),
+                    }
                 }
             }
             raw_line.clear();
@@ -243,7 +254,7 @@ fn main() {
     let mut controller = Controller::from_port(9051);
     // controller.assert("PROTOCOLINFO");
     let protocolinfo = controller.authenticate();
-    // controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara");
+    controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara");
     //    controller.write("PROTOCOLINFO\r\n");
     //    controller.write("PROTOCOLINFO\r\n");
 }
