@@ -33,6 +33,26 @@ use crypto::mac::Mac;
 // }
 
 #[derive(Debug)]
+enum ReplyStatus {
+    Positive,
+    TempNegative,
+    PermNegative,
+    Async,
+}
+
+#[derive(Debug)]
+struct ReplyLine {
+    reply: String,
+    data: Option<String>,
+}
+
+#[derive(Debug)]
+struct Reply {
+    code: u16,
+    lines: Vec<ReplyLine>,
+}
+
+#[derive(Debug)]
 enum AuthMethod {
     Null,
     HashedPassword,
@@ -102,13 +122,13 @@ impl<T: Read + Write> Controller<T> {
         self.cmd_authenticate(pwd);
     }
 
-    fn raw_cmd(&mut self, cmd: &str) -> Vec<String> {
+    fn raw_cmd(&mut self, cmd: &str) -> Reply {
         debug!("{}", cmd);
         self.con.buf_writer.write_all(cmd.as_bytes()).unwrap();
         self.con.buf_writer.write_all(b"\r\n").unwrap();
         self.con.buf_writer.flush().unwrap();
         let mut raw_line = String::new();
-        let mut reply = Vec::new();
+        let mut reply_lines = Vec::new();
 
         // self.con.buf_reader.read_line(&mut raw_line).unwrap();
         // {
@@ -119,49 +139,81 @@ impl<T: Read + Write> Controller<T> {
         //
         // let status_code = &raw_line.clone()[..3];
         // raw_line.clear();
-        let status_code_reply = "250";
+        // let status_code_reply = "250";
         let mut multi_line = false;
+        let mut multi_line_reply = String::new();
+        let mut multi_line_data = String::new();
+        let mut status_code_str = String::new();
+        let mut status_code = 0 as u16;
 
         while self.con.buf_reader.read_line(&mut raw_line).unwrap() > 0 {
-            {
-                let line = &raw_line[..raw_line.len() - 2]; // remove "\r\n"
-                debug!("{}", line);
-                reply.push(line.to_string());
-
-                if multi_line {
-                    if line == "." {
-                        multi_line = false;
-                    }
+            if multi_line {
+                if raw_line == ".\r\n" {
+                    multi_line = false;
+                    debug!("\n{}", multi_line_data);
+                    reply_lines.push(ReplyLine {
+                        reply: multi_line_reply.to_string(),
+                        data: Some(multi_line_data.to_string()),
+                    });
+                    multi_line_data.clear();
                 } else {
-                    if &line[..3] != status_code_reply {
+                    multi_line_data.push_str(&raw_line);
+                }
+            } else {
+                // A sinle line reply line should be at least XYZ_\r\n
+                if raw_line.len() < 6 {
+                    panic!("Invalid reply line");
+                }
+                let code = &raw_line[..3];
+                let mode = &raw_line[3..4];
+                let line = &raw_line[4..raw_line.len() - 2]; // remove code, mode and "\r\n"
+                debug!("{}{}{}", code, mode, line);
+                reply_lines.push(ReplyLine {
+                    reply: line.to_string(),
+                    data: None,
+                });
+
+                if status_code_str == "" {
+                    status_code_str = String::from(code);
+                    status_code = status_code_str.parse::<u16>().unwrap();
+                } else {
+                    // TODO Parse Async replies here
+                    if code != status_code_str {
                         panic!("Reply Error");
                     }
-                    match &line[3..4] {
-                        "-" => (),
-                        " " => break,
-                        "+" => multi_line = true,
-                        _ => panic!("Reply Error"),
+                }
+                match mode {
+                    "-" => (), // Single line
+                    " " => break, // End of reply
+                    "+" => {
+                        // Multiple line
+                        multi_line = true;
+                        multi_line_reply = line.to_string();
                     }
+                    _ => panic!("Invalid reply mode"),
                 }
             }
             raw_line.clear();
         }
-        reply
+        Reply {
+            code: status_code,
+            lines: reply_lines,
+        }
     }
 
     fn cmd_protocolinfo(&mut self) -> ProtocolInfo {
         let reply = self.raw_cmd("PROTOCOLINFO");
         // regex for QuotedString = (\\.|[^\"])*
-        let re_protocolinfo = Regex::new("^250-PROTOCOLINFO (?P<version>[0-9]+)$").unwrap();
-        let re_tor_version = Regex::new("^250-VERSION \
-                                         Tor=\"(?P<tor_version>(\\.|[^\"])*)\"[ ]*\
-                                         (?P<opt_arguments>.*)$")
+        let re_protocolinfo = Regex::new("^PROTOCOLINFO (?P<version>[0-9]+)$").unwrap();
+        let re_tor_version = Regex::new("^VERSION Tor=\"(?P<tor_version>(\\.|[^\"])*)\"[ ]*\
+                                        (?P<opt_arguments>.*)$")
                                  .unwrap();
-        let re_auth = Regex::new("^250-AUTH METHODS=(?P<auth_methods>[A-Z,]+)[ ]*\
-                                  (?P<maybe_cookie_files>.*)$")
+        let re_auth = Regex::new("^AUTH METHODS=(?P<auth_methods>[A-Z,]+)[ ]*\
+                                 (?P<maybe_cookie_files>.*)$")
                           .unwrap();
         let re_cookie_file = Regex::new("COOKIEFILE=\"(?P<cookie_file>(\\.|[^\"])*)\"").unwrap();
-        let prot_inf = re_protocolinfo.captures(reply[0].as_str()).unwrap();
+
+        let prot_inf = re_protocolinfo.captures(reply.lines[0].reply.as_str()).unwrap();
         let version = prot_inf.name("version").unwrap().parse::<u8>().unwrap();
         match version {
             1 => (),
@@ -171,10 +223,11 @@ impl<T: Read + Write> Controller<T> {
         let mut tor_version = String::new();
         let mut cookie_files = Vec::new();
         let mut auth_methods = Vec::new();
-        for line in &reply[1..] {
-            match line.split(' ').collect::<Vec<_>>()[0] {
-                "250-AUTH" => {
-                    let auth = re_auth.captures(line).unwrap();
+
+        for line in reply.lines.iter().skip(1) {
+            match line.reply.split(' ').nth(0) {
+                Some("AUTH") => {
+                    let auth = re_auth.captures(&line.reply).unwrap();
                     auth_methods = auth.name("auth_methods")
                                        .unwrap()
                                        .split(',')
@@ -188,19 +241,22 @@ impl<T: Read + Write> Controller<T> {
                                        .collect::<Vec<_>>();
                     let maybe_cookie_files = auth.name("maybe_cookie_files").unwrap();
                     for caps in re_cookie_file.captures_iter(maybe_cookie_files) {
-                        cookie_files.push(caps.name("cookie_file").unwrap().to_string());
+                        cookie_files.push(caps.name("cookie_file")
+                                              .unwrap()
+                                              .to_string());
                     }
                     // debug!("Auth methods={:?}", auth_methods);
                     // debug!("Cookie files={:?}", cookie_files);
                 }
-                "250-VERSION" => {
-                    let ver = re_tor_version.captures(line).unwrap();
+                Some("VERSION") => {
+                    let ver = re_tor_version.captures(&line.reply).unwrap();
                     tor_version = ver.name("tor_version").unwrap().to_string();
                     let opt_arguments = ver.name("opt_arguments").unwrap();
                     // debug!("Tor version={}, optional args={}", tor_version, opt_arguments);
                 }
-                "250" => debug!("OK"), // End of PROTOCOLINFO reply
-                _ => (), // Unrecognized InfoLine
+                Some("OK") => debug!("OK"), // End of PROTOCOLINFO reply
+                Some(_) => (), // Unrecognized InfoLine
+                _ => panic!("Invalid InfoLine"),
             }
         }
         // debug!("version = {}", version);
@@ -215,11 +271,11 @@ impl<T: Read + Write> Controller<T> {
     fn cmd_authchallenge(&mut self, client_nonce: &[u8; 32]) -> AuthChallenge {
         let reply = self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}", client_nonce.to_hex())
                                      .as_str());
-        let re_authchallenge = Regex::new("^250 AUTHCHALLENGE \
+        let re_authchallenge = Regex::new("^AUTHCHALLENGE \
                                            SERVERHASH=(?P<server_hash>[0-9A-F]{64}) \
                                            SERVERNONCE=(?P<server_nonce>[0-9A-F]{64})$")
                                    .unwrap();
-        let server_challenge = re_authchallenge.captures(reply[0].as_str()).unwrap();
+        let server_challenge = re_authchallenge.captures(reply.lines[0].reply.as_str()).unwrap();
         let server_hash = server_challenge.name("server_hash").unwrap();
         let server_nonce = server_challenge.name("server_nonce").unwrap();
 
@@ -255,6 +311,7 @@ fn main() {
     // controller.assert("PROTOCOLINFO");
     let protocolinfo = controller.authenticate();
     controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara");
+    controller.raw_cmd("QUIT");
     //    controller.write("PROTOCOLINFO\r\n");
     //    controller.write("PROTOCOLINFO\r\n");
 }
