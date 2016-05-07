@@ -6,8 +6,10 @@ extern crate rustc_serialize;
 extern crate crypto;
 
 use std::fmt;
+use std::num;
 use std::path::Path;
 use std::net::{SocketAddr, TcpStream, Shutdown};
+use std::io;
 use std::io::{Read, Write};
 // use std::str;
 use std::io::{BufReader, BufRead, BufWriter};
@@ -38,6 +40,7 @@ enum ReplyStatus {
     TempNegative,
     PermNegative,
     Async,
+    Unknown,
 }
 
 #[derive(Debug)]
@@ -49,6 +52,7 @@ struct ReplyLine {
 #[derive(Debug)]
 struct Reply {
     code: u16,
+    status: ReplyStatus,
     lines: Vec<ReplyLine>,
 }
 
@@ -86,31 +90,65 @@ struct Controller<T: Read + Write> {
                          *    hash_pass: Option<&str>, */
 }
 
+#[derive(Debug)]
+enum Error {
+    Stream(io::Error),
+    StringParse(num::ParseIntError),
+    Regex(regex::Error),
+    Reply(ReplyError),
+}
+
+#[derive(Debug)]
+enum ReplyError {
+    NonNumericStatusCode,
+    VaryingStatusCode,
+    InvalidReplyMode,
+    InvalidReplyLine,
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Self {
+        Error::Stream(err)
+    }
+}
+
+impl From<num::ParseIntError> for Error {
+    fn from(err: num::ParseIntError) -> Self {
+        Error::StringParse(err)
+    }
+}
+
+impl From<regex::Error> for Error {
+    fn from(err: regex::Error) -> Self {
+        Error::Regex(err)
+    }
+}
+
 impl Controller<TcpStream> {
-    fn from_port(port: u16) -> Controller<TcpStream> {
-        let raw_stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let buf_reader = BufReader::new(raw_stream.try_clone().unwrap());
-        let buf_writer = BufWriter::new(raw_stream.try_clone().unwrap());
-        Controller {
+    fn from_port(port: u16) -> Result<Controller<TcpStream>, io::Error> {
+        let raw_stream = try!(TcpStream::connect(("127.0.0.1", port)));
+        let buf_reader = BufReader::new(try!(raw_stream.try_clone()));
+        let buf_writer = BufWriter::new(try!(raw_stream.try_clone()));
+        Ok(Controller {
             con: Connection {
                 raw_stream: raw_stream,
                 buf_reader: buf_reader,
                 buf_writer: buf_writer,
             },
-        }
+        })
     }
 }
 
 impl<T: Read + Write> Controller<T> {
-    fn authenticate(&mut self) {
-        let protocolinfo = self.cmd_protocolinfo();
+    fn authenticate(&mut self) -> Result<(), Error> {
+        let protocolinfo = try!(self.cmd_protocolinfo());
         let client_nonce: &[u8; 32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
                                         18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32];
-        let authchallenge = self.cmd_authchallenge(client_nonce);
+        let authchallenge = try!(self.cmd_authchallenge(client_nonce));
         let mut cookie_file = File::open(protocolinfo.cookie_files[0].clone()).unwrap();
         let mut cookie = Vec::new();
         cookie_file.read_to_end(&mut cookie).unwrap();
-        let mut sha256 = Sha256::new();
+        let sha256 = Sha256::new();
         let mut hmac = Hmac::new(sha256,
                                  b"Tor safe cookie authentication controller-to-server hash");
         hmac.input(cookie.as_slice());
@@ -120,33 +158,24 @@ impl<T: Read + Write> Controller<T> {
         let pwd = hmac_res.code();
 
         self.cmd_authenticate(pwd);
+        Ok(())
     }
 
-    fn raw_cmd(&mut self, cmd: &str) -> Reply {
+    fn raw_cmd(&mut self, cmd: &str) -> Result<Reply, Error> {
         debug!("{}", cmd);
-        self.con.buf_writer.write_all(cmd.as_bytes()).unwrap();
-        self.con.buf_writer.write_all(b"\r\n").unwrap();
-        self.con.buf_writer.flush().unwrap();
+        try!(self.con.buf_writer.write_all(cmd.as_bytes()));
+        try!(self.con.buf_writer.write_all(b"\r\n"));
+        try!(self.con.buf_writer.flush());
+
         let mut raw_line = String::new();
         let mut reply_lines = Vec::new();
-
-        // self.con.buf_reader.read_line(&mut raw_line).unwrap();
-        // {
-        // let line = &raw_line[..raw_line.len()-2];
-        // debug!("{}", line);
-        // reply.push(line.to_string());
-        // }
-        //
-        // let status_code = &raw_line.clone()[..3];
-        // raw_line.clear();
-        // let status_code_reply = "250";
         let mut multi_line = false;
         let mut multi_line_reply = String::new();
         let mut multi_line_data = String::new();
         let mut status_code_str = String::new();
         let mut status_code = 0 as u16;
 
-        while self.con.buf_reader.read_line(&mut raw_line).unwrap() > 0 {
+        while try!(self.con.buf_reader.read_line(&mut raw_line)) > 0 {
             if multi_line {
                 if raw_line == ".\r\n" {
                     multi_line = false;
@@ -162,7 +191,7 @@ impl<T: Read + Write> Controller<T> {
             } else {
                 // A sinle line reply line should be at least XYZ_\r\n
                 if raw_line.len() < 6 {
-                    panic!("Invalid reply line");
+                    return Err(Error::Reply(ReplyError::InvalidReplyLine));
                 }
                 let code = &raw_line[..3];
                 let mode = &raw_line[3..4];
@@ -175,11 +204,13 @@ impl<T: Read + Write> Controller<T> {
 
                 if status_code_str == "" {
                     status_code_str = String::from(code);
-                    status_code = status_code_str.parse::<u16>().unwrap();
+                    status_code = try!(status_code_str.parse::<u16>().map_err(|_| {
+                        Error::Reply(ReplyError::NonNumericStatusCode)
+                    }));
                 } else {
                     // TODO Parse Async replies here
                     if code != status_code_str {
-                        panic!("Reply Error");
+                        return Err(Error::Reply(ReplyError::VaryingStatusCode));
                     }
                 }
                 match mode {
@@ -190,28 +221,34 @@ impl<T: Read + Write> Controller<T> {
                         multi_line = true;
                         multi_line_reply = line.to_string();
                     }
-                    _ => panic!("Invalid reply mode"),
+                    _ => return Err(Error::Reply(ReplyError::InvalidReplyMode)),
                 }
             }
             raw_line.clear();
         }
-        Reply {
+
+        Ok(Reply {
             code: status_code,
+            status: match status_code_str.chars().nth(0) {
+                Some('2') => ReplyStatus::Positive,
+                Some('4') => ReplyStatus::TempNegative,
+                Some('5') => ReplyStatus::PermNegative,
+                Some('6') => ReplyStatus::Async,
+                _ => ReplyStatus::Unknown,
+            },
             lines: reply_lines,
-        }
+        })
     }
 
-    fn cmd_protocolinfo(&mut self) -> ProtocolInfo {
-        let reply = self.raw_cmd("PROTOCOLINFO");
+    fn cmd_protocolinfo(&mut self) -> Result<ProtocolInfo, Error> {
+        let reply = try!(self.raw_cmd("PROTOCOLINFO"));
         // regex for QuotedString = (\\.|[^\"])*
-        let re_protocolinfo = Regex::new("^PROTOCOLINFO (?P<version>[0-9]+)$").unwrap();
-        let re_tor_version = Regex::new("^VERSION Tor=\"(?P<tor_version>(\\.|[^\"])*)\"[ ]*\
-                                        (?P<opt_arguments>.*)$")
-                                 .unwrap();
-        let re_auth = Regex::new("^AUTH METHODS=(?P<auth_methods>[A-Z,]+)[ ]*\
-                                 (?P<maybe_cookie_files>.*)$")
-                          .unwrap();
-        let re_cookie_file = Regex::new("COOKIEFILE=\"(?P<cookie_file>(\\.|[^\"])*)\"").unwrap();
+        let re_protocolinfo = try!(Regex::new("^PROTOCOLINFO (?P<version>[0-9]+)$"));
+        let re_tor_version = try!(Regex::new("^VERSION Tor=\"(?P<tor_version>(\\.|[^\"])*)\"[ ]*\
+                                        (?P<opt_arguments>.*)$"));
+        let re_auth = try!(Regex::new("^AUTH METHODS=(?P<auth_methods>[A-Z,]+)[ ]*\
+                                 (?P<maybe_cookie_files>.*)$"));
+        let re_cookie_file = try!(Regex::new("COOKIEFILE=\"(?P<cookie_file>(\\.|[^\"])*)\""));
 
         let prot_inf = re_protocolinfo.captures(reply.lines[0].reply.as_str()).unwrap();
         let version = prot_inf.name("version").unwrap().parse::<u8>().unwrap();
@@ -260,17 +297,18 @@ impl<T: Read + Write> Controller<T> {
             }
         }
         // debug!("version = {}", version);
-        ProtocolInfo {
+        Ok(ProtocolInfo {
             protocol_info_ver: version,
             tor_ver: tor_version,
             auth_methods: auth_methods,
             cookie_files: cookie_files,
-        }
+        })
     }
 
-    fn cmd_authchallenge(&mut self, client_nonce: &[u8; 32]) -> AuthChallenge {
-        let reply = self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}", client_nonce.to_hex())
-                                     .as_str());
+    fn cmd_authchallenge(&mut self, client_nonce: &[u8; 32]) -> Result<AuthChallenge, Error> {
+        let reply = try!(self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}",
+                                              client_nonce.to_hex())
+                                          .as_str()));
         let re_authchallenge = Regex::new("^AUTHCHALLENGE \
                                            SERVERHASH=(?P<server_hash>[0-9A-F]{64}) \
                                            SERVERNONCE=(?P<server_nonce>[0-9A-F]{64})$")
@@ -286,7 +324,7 @@ impl<T: Read + Write> Controller<T> {
         res.server_hash.clone_from_slice(server_hash.from_hex().unwrap().as_slice());
         res.server_nonce.clone_from_slice(server_nonce.from_hex().unwrap().as_slice());
 
-        res
+        Ok(res)
     }
 
     fn cmd_authenticate(&mut self, pwd: &[u8]) {
@@ -307,11 +345,11 @@ fn main() {
     env_logger::init().unwrap();
 
     info!("Starting Tor Controller!");
-    let mut controller = Controller::from_port(9051);
+    let mut controller = Controller::from_port(9051).unwrap();
     // controller.assert("PROTOCOLINFO");
-    let protocolinfo = controller.authenticate();
-    controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara");
-    controller.raw_cmd("QUIT");
+    controller.authenticate().unwrap();
+    controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara").unwrap();
+    controller.raw_cmd("QUIT").unwrap();
     //    controller.write("PROTOCOLINFO\r\n");
     //    controller.write("PROTOCOLINFO\r\n");
 }
