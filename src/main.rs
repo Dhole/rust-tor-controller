@@ -23,6 +23,16 @@ use crypto::hmac::Hmac;
 use crypto::sha2::Sha256;
 use crypto::mac::Mac;
 
+// Gives val from Some(val) or returns Err(Error::Reply($rep_err))
+macro_rules! some_or_rep_err {
+    ($expr:expr, $rep_err:expr) => (match $expr {
+        Some(val) => val,
+        None => {
+            return Err(Error::Reply($rep_err));
+        }
+    })
+}
+
 // enum Auth {
 //    None,
 //    Cookie(Path),
@@ -95,15 +105,23 @@ enum Error {
     Stream(io::Error),
     StringParse(num::ParseIntError),
     Regex(regex::Error),
+    RawReply(RawReplyError),
     Reply(ReplyError),
 }
 
 #[derive(Debug)]
-enum ReplyError {
+enum RawReplyError {
     NonNumericStatusCode,
     VaryingStatusCode,
     InvalidReplyMode,
     InvalidReplyLine,
+}
+
+#[derive(Debug)]
+enum ReplyError {
+    MissingField,
+    ParseIntError,
+    RegexCapture,
 }
 
 impl From<io::Error> for Error {
@@ -191,7 +209,7 @@ impl<T: Read + Write> Controller<T> {
             } else {
                 // A sinle line reply line should be at least XYZ_\r\n
                 if raw_line.len() < 6 {
-                    return Err(Error::Reply(ReplyError::InvalidReplyLine));
+                    return Err(Error::RawReply(RawReplyError::InvalidReplyLine));
                 }
                 let code = &raw_line[..3];
                 let mode = &raw_line[3..4];
@@ -205,12 +223,12 @@ impl<T: Read + Write> Controller<T> {
                 if status_code_str == "" {
                     status_code_str = String::from(code);
                     status_code = try!(status_code_str.parse::<u16>().map_err(|_| {
-                        Error::Reply(ReplyError::NonNumericStatusCode)
+                        Error::RawReply(RawReplyError::NonNumericStatusCode)
                     }));
                 } else {
                     // TODO Parse Async replies here
                     if code != status_code_str {
-                        return Err(Error::Reply(ReplyError::VaryingStatusCode));
+                        return Err(Error::RawReply(RawReplyError::VaryingStatusCode));
                     }
                 }
                 match mode {
@@ -221,7 +239,7 @@ impl<T: Read + Write> Controller<T> {
                         multi_line = true;
                         multi_line_reply = line.to_string();
                     }
-                    _ => return Err(Error::Reply(ReplyError::InvalidReplyMode)),
+                    _ => return Err(Error::RawReply(RawReplyError::InvalidReplyMode)),
                 }
             }
             raw_line.clear();
@@ -250,8 +268,11 @@ impl<T: Read + Write> Controller<T> {
                                  (?P<maybe_cookie_files>.*)$"));
         let re_cookie_file = try!(Regex::new("COOKIEFILE=\"(?P<cookie_file>(\\.|[^\"])*)\""));
 
-        let prot_inf = re_protocolinfo.captures(reply.lines[0].reply.as_str()).unwrap();
-        let version = prot_inf.name("version").unwrap().parse::<u8>().unwrap();
+        let prot_inf = some_or_rep_err!(re_protocolinfo.captures(reply.lines[0].reply.as_str()),
+                                        ReplyError::RegexCapture);
+        let version_str = some_or_rep_err!(prot_inf.name("version"), ReplyError::MissingField);
+        let version = try!(version_str.parse::<u8>()
+                                      .map_err(|_| Error::Reply(ReplyError::ParseIntError)));
         match version {
             1 => (),
             _ => panic!("Version {} not supported", version),
@@ -264,9 +285,10 @@ impl<T: Read + Write> Controller<T> {
         for line in reply.lines.iter().skip(1) {
             match line.reply.split(' ').nth(0) {
                 Some("AUTH") => {
-                    let auth = re_auth.captures(&line.reply).unwrap();
-                    auth_methods = auth.name("auth_methods")
-                                       .unwrap()
+                    let auth = some_or_rep_err!(re_auth.captures(&line.reply),
+                                                ReplyError::RegexCapture);
+                    auth_methods = some_or_rep_err!(auth.name("auth_methods"),
+                                                    ReplyError::MissingField)
                                        .split(',')
                                        .map(|x| match x {
                                            "NULL" => AuthMethod::Null,
@@ -349,6 +371,8 @@ fn main() {
     // controller.assert("PROTOCOLINFO");
     controller.authenticate().unwrap();
     controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara").unwrap();
+    controller.raw_cmd("FOO").unwrap();
+    controller.raw_cmd("BAR").unwrap();
     controller.raw_cmd("QUIT").unwrap();
     //    controller.write("PROTOCOLINFO\r\n");
     //    controller.write("PROTOCOLINFO\r\n");
