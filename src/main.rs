@@ -4,6 +4,7 @@ extern crate env_logger;
 extern crate regex;
 extern crate rustc_serialize;
 extern crate crypto;
+extern crate rand;
 
 use std::fmt;
 use std::num;
@@ -18,10 +19,13 @@ use std::collections::HashMap;
 use std::fs::File;
 
 use regex::Regex;
+use rustc_serialize::hex;
 use rustc_serialize::hex::{ToHex, FromHex};
 use crypto::hmac::Hmac;
 use crypto::sha2::Sha256;
 use crypto::mac::Mac;
+use crypto::util::fixed_time_eq;
+use rand::Rng;
 
 // Gives val from Some(val) or returns Err(Error::Reply($rep_err))
 macro_rules! some_or_rep_err {
@@ -29,6 +33,26 @@ macro_rules! some_or_rep_err {
         Some(val) => val,
         None => {
             return Err(Error::Reply($rep_err));
+        }
+    })
+}
+
+// Gives the $re regex capture of $str or returns Reply(RegexCapture) error
+macro_rules! re_cap_or_err {
+    ($re:expr, $str:expr) => (match $re.captures($str) {
+        Some(val) => val,
+        None => {
+            return Err(Error::Reply(ReplyError::RegexCapture));
+        }
+    })
+}
+
+// Gives the $name found in $cap regex capture or returns Reply(MissingField) error
+macro_rules! cap_name_or_err {
+    ($cap:expr, $name:expr) => (match $cap.name($name) {
+        Some(val) => val,
+        None => {
+            return Err(Error::Reply(ReplyError::MissingField));
         }
     })
 }
@@ -107,6 +131,7 @@ enum Error {
     Regex(regex::Error),
     RawReply(RawReplyError),
     Reply(ReplyError),
+    Auth(AuthError),
 }
 
 #[derive(Debug)]
@@ -122,6 +147,13 @@ enum ReplyError {
     MissingField,
     ParseIntError,
     RegexCapture,
+    FromHexError(hex::FromHexError),
+}
+
+#[derive(Debug)]
+enum AuthError {
+    ServerNotVerified,
+    AuthFailed(Reply),
 }
 
 impl From<io::Error> for Error {
@@ -139,6 +171,12 @@ impl From<num::ParseIntError> for Error {
 impl From<regex::Error> for Error {
     fn from(err: regex::Error) -> Self {
         Error::Regex(err)
+    }
+}
+
+impl From<hex::FromHexError> for Error {
+    fn from(err: hex::FromHexError) -> Self {
+        Error::Reply(ReplyError::FromHexError(err))
     }
 }
 
@@ -160,23 +198,42 @@ impl Controller<TcpStream> {
 impl<T: Read + Write> Controller<T> {
     fn authenticate(&mut self) -> Result<(), Error> {
         let protocolinfo = try!(self.cmd_protocolinfo());
-        let client_nonce: &[u8; 32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
-                                        18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32];
-        let authchallenge = try!(self.cmd_authchallenge(client_nonce));
-        let mut cookie_file = File::open(protocolinfo.cookie_files[0].clone()).unwrap();
+
+        let mut rng = rand::thread_rng();
+        let client_nonce = rng.gen::<[u8; 32]>();
+        let authchallenge = try!(self.cmd_authchallenge(&client_nonce));
+        let mut cookie_file = try!(File::open(protocolinfo.cookie_files[0].clone()));
         let mut cookie = Vec::new();
-        cookie_file.read_to_end(&mut cookie).unwrap();
+        try!(cookie_file.read_to_end(&mut cookie));
         let sha256 = Sha256::new();
+
+        // First we compute the hmac that the server should have sent us, to check its validity.
         let mut hmac = Hmac::new(sha256,
-                                 b"Tor safe cookie authentication controller-to-server hash");
+                                 b"Tor safe cookie authentication server-to-controller hash");
         hmac.input(cookie.as_slice());
-        hmac.input(client_nonce);
+        hmac.input(&client_nonce);
         hmac.input(&authchallenge.server_nonce);
         let hmac_res = hmac.result();
         let pwd = hmac_res.code();
 
-        self.cmd_authenticate(pwd);
-        Ok(())
+        if !fixed_time_eq(pwd, &authchallenge.server_hash) {
+            return Err(Error::Auth(AuthError::ServerNotVerified));
+        }
+
+        // We then compute the client's hmac in order to authenticate ourselves.
+        let mut hmac = Hmac::new(sha256,
+                                 b"Tor safe cookie authentication controller-to-server hash");
+        hmac.input(cookie.as_slice());
+        hmac.input(&client_nonce);
+        hmac.input(&authchallenge.server_nonce);
+        let hmac_res = hmac.result();
+        let pwd = hmac_res.code();
+
+        let auth_reply = try!(self.cmd_authenticate(pwd));
+        match auth_reply.status {
+            ReplyStatus::Positive => Ok(()),
+            _ => Err(Error::Auth(AuthError::AuthFailed(auth_reply))),
+        }
     }
 
     fn raw_cmd(&mut self, cmd: &str) -> Result<Reply, Error> {
@@ -207,13 +264,13 @@ impl<T: Read + Write> Controller<T> {
                     multi_line_data.push_str(&raw_line);
                 }
             } else {
-                // A sinle line reply line should be at least XYZ_\r\n
+                // A sinle line reply line should be at least "XYZ_\r\n"
                 if raw_line.len() < 6 {
                     return Err(Error::RawReply(RawReplyError::InvalidReplyLine));
                 }
                 let code = &raw_line[..3];
                 let mode = &raw_line[3..4];
-                let line = &raw_line[4..raw_line.len() - 2]; // remove code, mode and "\r\n"
+                let line = &raw_line[4..raw_line.len() - 2]; // remove status code, mode and "\r\n"
                 debug!("{}{}{}", code, mode, line);
                 reply_lines.push(ReplyLine {
                     reply: line.to_string(),
@@ -268,9 +325,8 @@ impl<T: Read + Write> Controller<T> {
                                  (?P<maybe_cookie_files>.*)$"));
         let re_cookie_file = try!(Regex::new("COOKIEFILE=\"(?P<cookie_file>(\\.|[^\"])*)\""));
 
-        let prot_inf = some_or_rep_err!(re_protocolinfo.captures(reply.lines[0].reply.as_str()),
-                                        ReplyError::RegexCapture);
-        let version_str = some_or_rep_err!(prot_inf.name("version"), ReplyError::MissingField);
+        let prot_inf = re_cap_or_err!(re_protocolinfo, reply.lines[0].reply.as_str());
+        let version_str = cap_name_or_err!(prot_inf, "version");
         let version = try!(version_str.parse::<u8>()
                                       .map_err(|_| Error::Reply(ReplyError::ParseIntError)));
         match version {
@@ -285,10 +341,8 @@ impl<T: Read + Write> Controller<T> {
         for line in reply.lines.iter().skip(1) {
             match line.reply.split(' ').nth(0) {
                 Some("AUTH") => {
-                    let auth = some_or_rep_err!(re_auth.captures(&line.reply),
-                                                ReplyError::RegexCapture);
-                    auth_methods = some_or_rep_err!(auth.name("auth_methods"),
-                                                    ReplyError::MissingField)
+                    let auth = re_cap_or_err!(re_auth, &line.reply);
+                    auth_methods = cap_name_or_err!(auth, "auth_methods")
                                        .split(',')
                                        .map(|x| match x {
                                            "NULL" => AuthMethod::Null,
@@ -298,27 +352,20 @@ impl<T: Read + Write> Controller<T> {
                                            _ => panic!("Auth method {} not supported", x),
                                        })
                                        .collect::<Vec<_>>();
-                    let maybe_cookie_files = auth.name("maybe_cookie_files").unwrap();
+                    let maybe_cookie_files = cap_name_or_err!(auth, "maybe_cookie_files");
                     for caps in re_cookie_file.captures_iter(maybe_cookie_files) {
-                        cookie_files.push(caps.name("cookie_file")
-                                              .unwrap()
-                                              .to_string());
+                        cookie_files.push(cap_name_or_err!(caps, "cookie_file").to_string());
                     }
-                    // debug!("Auth methods={:?}", auth_methods);
-                    // debug!("Cookie files={:?}", cookie_files);
                 }
                 Some("VERSION") => {
-                    let ver = re_tor_version.captures(&line.reply).unwrap();
-                    tor_version = ver.name("tor_version").unwrap().to_string();
-                    let opt_arguments = ver.name("opt_arguments").unwrap();
-                    // debug!("Tor version={}, optional args={}", tor_version, opt_arguments);
+                    let ver = re_cap_or_err!(re_tor_version, &line.reply);
+                    tor_version = cap_name_or_err!(ver, "tor_version").to_string();
+                    let opt_arguments = cap_name_or_err!(ver, "opt_arguments");
                 }
-                Some("OK") => debug!("OK"), // End of PROTOCOLINFO reply
-                Some(_) => (), // Unrecognized InfoLine
-                _ => panic!("Invalid InfoLine"),
+                Some("OK") => (), // End of PROTOCOLINFO reply
+                _ => (), // Unrecognized InfoLine
             }
         }
-        // debug!("version = {}", version);
         Ok(ProtocolInfo {
             protocol_info_ver: version,
             tor_ver: tor_version,
@@ -331,26 +378,25 @@ impl<T: Read + Write> Controller<T> {
         let reply = try!(self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}",
                                               client_nonce.to_hex())
                                           .as_str()));
-        let re_authchallenge = Regex::new("^AUTHCHALLENGE \
+        let re_authchallenge = try!(Regex::new("^AUTHCHALLENGE \
                                            SERVERHASH=(?P<server_hash>[0-9A-F]{64}) \
-                                           SERVERNONCE=(?P<server_nonce>[0-9A-F]{64})$")
-                                   .unwrap();
-        let server_challenge = re_authchallenge.captures(reply.lines[0].reply.as_str()).unwrap();
-        let server_hash = server_challenge.name("server_hash").unwrap();
-        let server_nonce = server_challenge.name("server_nonce").unwrap();
+                                           SERVERNONCE=(?P<server_nonce>[0-9A-F]{64})$"));
+        let server_challenge = re_cap_or_err!(re_authchallenge, reply.lines[0].reply.as_str());
+        let server_hash = cap_name_or_err!(server_challenge, "server_hash");
+        let server_nonce = cap_name_or_err!(server_challenge, "server_nonce");
 
         let mut res = AuthChallenge {
             server_hash: [0; 32],
             server_nonce: [0; 32],
         };
-        res.server_hash.clone_from_slice(server_hash.from_hex().unwrap().as_slice());
-        res.server_nonce.clone_from_slice(server_nonce.from_hex().unwrap().as_slice());
+        res.server_hash.clone_from_slice(try!(server_hash.from_hex()).as_slice());
+        res.server_nonce.clone_from_slice(try!(server_nonce.from_hex()).as_slice());
 
         Ok(res)
     }
 
-    fn cmd_authenticate(&mut self, pwd: &[u8]) {
-        let reply = self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str());
+    fn cmd_authenticate(&mut self, pwd: &[u8]) -> Result<Reply, Error> {
+        self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str())
     }
     //    fn connect(mut &self) {
     //        match self.connection {

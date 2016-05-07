@@ -12,10 +12,10 @@ The library should provide an interface similar to stem [2].
 
 ## TODO
 
-- Do error handling: make all functions return Results, and change all the
-  unwrap()'s to try!()'s.
+- ~~Do error handling: make all functions return Results, and change all the
+  unwrap()'s to try!()'s.~~
 - Implement the different methods of authentication.
 - Unquote strings.
-- Randomize ClientNonce
-- Verify ServerHash
+- ~~Randomize ClientNonce~~
+- ~~Verify ServerHash~~
 - ...
