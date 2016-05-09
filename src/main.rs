@@ -42,7 +42,7 @@ macro_rules! re_cap_or_err {
     ($re:expr, $str:expr) => (match $re.captures($str) {
         Some(val) => val,
         None => {
-            return Err(Error::Reply(ReplyError::RegexCapture));
+            return Err(Error::ParseReply(ParseReplyError::RegexCapture));
         }
     })
 }
@@ -52,7 +52,7 @@ macro_rules! cap_name_or_err {
     ($cap:expr, $name:expr) => (match $cap.name($name) {
         Some(val) => val,
         None => {
-            return Err(Error::Reply(ReplyError::MissingField));
+            return Err(Error::ParseReply(ParseReplyError::MissingField));
         }
     })
 }
@@ -85,8 +85,8 @@ struct ReplyLine {
 
 #[derive(Debug)]
 struct Reply {
-    code: u16,
-    status: ReplyStatus,
+    //    code: u16,
+    //    status: ReplyStatus,
     lines: Vec<ReplyLine>,
 }
 
@@ -130,30 +130,41 @@ enum Error {
     StringParse(num::ParseIntError),
     Regex(regex::Error),
     RawReply(RawReplyError),
-    Reply(ReplyError),
+    ParseReply(ParseReplyError),
     Auth(AuthError),
+    Reply(ReplyError),
 }
 
 #[derive(Debug)]
 enum RawReplyError {
-    NonNumericStatusCode,
+    NonNumericStatusCode(num::ParseIntError),
     VaryingStatusCode,
     InvalidReplyMode,
     InvalidReplyLine,
+    InvalidStatusCode,
+    InvalidReply,
 }
 
 #[derive(Debug)]
-enum ReplyError {
+enum ParseReplyError {
     MissingField,
-    ParseIntError,
+    ParseIntError(num::ParseIntError),
     RegexCapture,
     FromHexError(hex::FromHexError),
+    KeyNotFound,
+}
+
+#[derive(Debug)]
+struct ReplyError {
+    code: u16,
+    status: ReplyStatus,
+    line: String,
 }
 
 #[derive(Debug)]
 enum AuthError {
     ServerNotVerified,
-    AuthFailed(Reply),
+    AuthFailed(ReplyError),
 }
 
 impl From<io::Error> for Error {
@@ -162,11 +173,11 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<num::ParseIntError> for Error {
-    fn from(err: num::ParseIntError) -> Self {
-        Error::StringParse(err)
-    }
-}
+// impl From<num::ParseIntError> for Error {
+//    fn from(err: num::ParseIntError) -> Self {
+//        Error::StringParse(err)
+//    }
+// }
 
 impl From<regex::Error> for Error {
     fn from(err: regex::Error) -> Self {
@@ -176,7 +187,7 @@ impl From<regex::Error> for Error {
 
 impl From<hex::FromHexError> for Error {
     fn from(err: hex::FromHexError) -> Self {
-        Error::Reply(ReplyError::FromHexError(err))
+        Error::ParseReply(ParseReplyError::FromHexError(err))
     }
 }
 
@@ -229,10 +240,10 @@ impl<T: Read + Write> Controller<T> {
         let hmac_res = hmac.result();
         let pwd = hmac_res.code();
 
-        let auth_reply = try!(self.cmd_authenticate(pwd));
-        match auth_reply.status {
-            ReplyStatus::Positive => Ok(()),
-            _ => Err(Error::Auth(AuthError::AuthFailed(auth_reply))),
+        match self.cmd_authenticate(pwd) {
+            Ok(_) => Ok(()),
+            Err(Error::Reply(rep_err)) => Err(Error::Auth(AuthError::AuthFailed(rep_err))),
+            Err(err) => Err(err),
         }
     }
 
@@ -261,7 +272,9 @@ impl<T: Read + Write> Controller<T> {
                     });
                     multi_line_data.clear();
                 } else {
-                    multi_line_data.push_str(&raw_line);
+                    // Store the multi line reply, replacing "\r\n" by "\n"
+                    multi_line_data.push_str(&raw_line[..raw_line.len() - 2]);
+                    multi_line_data.push_str("\n");
                 }
             } else {
                 // A sinle line reply line should be at least "XYZ_\r\n"
@@ -272,15 +285,17 @@ impl<T: Read + Write> Controller<T> {
                 let mode = &raw_line[3..4];
                 let line = &raw_line[4..raw_line.len() - 2]; // remove status code, mode and "\r\n"
                 debug!("{}{}{}", code, mode, line);
-                reply_lines.push(ReplyLine {
-                    reply: line.to_string(),
-                    data: None,
-                });
+                if mode != "+" {
+                    reply_lines.push(ReplyLine {
+                        reply: line.to_string(),
+                        data: None,
+                    });
+                }
 
                 if status_code_str == "" {
                     status_code_str = String::from(code);
-                    status_code = try!(status_code_str.parse::<u16>().map_err(|_| {
-                        Error::RawReply(RawReplyError::NonNumericStatusCode)
+                    status_code = try!(status_code_str.parse::<u16>().map_err(|err| {
+                        Error::RawReply(RawReplyError::NonNumericStatusCode(err))
                     }));
                 } else {
                     // TODO Parse Async replies here
@@ -302,17 +317,29 @@ impl<T: Read + Write> Controller<T> {
             raw_line.clear();
         }
 
-        Ok(Reply {
+        let status = match status_code_str.chars().nth(0) {
+            Some('2') => return Ok(Reply { lines: reply_lines }),
+            Some('4') => ReplyStatus::TempNegative,
+            Some('5') => ReplyStatus::PermNegative,
+            Some('6') => ReplyStatus::Async,
+            _ => return Err(Error::RawReply(RawReplyError::InvalidStatusCode)),
+        };
+
+        Err(Error::Reply(ReplyError {
             code: status_code,
-            status: match status_code_str.chars().nth(0) {
-                Some('2') => ReplyStatus::Positive,
-                Some('4') => ReplyStatus::TempNegative,
-                Some('5') => ReplyStatus::PermNegative,
-                Some('6') => ReplyStatus::Async,
-                _ => ReplyStatus::Unknown,
-            },
-            lines: reply_lines,
-        })
+            status: status,
+            line: reply_lines[0].reply.clone(),
+        }))
+
+        //        if let Some(reply_line) = reply_lines.iter().nth(0) {
+        //            return Err(Error::Reply(ReplyError {
+        //                code: status_code,
+        //                status: status,
+        //                line: reply_line.reply.clone(),
+        //            }));
+        //        } else {
+        //            return Err(Error::RawReply(RawReplyError::InvalidReply));
+        //        }
     }
 
     fn cmd_protocolinfo(&mut self) -> Result<ProtocolInfo, Error> {
@@ -328,7 +355,9 @@ impl<T: Read + Write> Controller<T> {
         let prot_inf = re_cap_or_err!(re_protocolinfo, reply.lines[0].reply.as_str());
         let version_str = cap_name_or_err!(prot_inf, "version");
         let version = try!(version_str.parse::<u8>()
-                                      .map_err(|_| Error::Reply(ReplyError::ParseIntError)));
+                                      .map_err(|err| {
+                                          Error::ParseReply(ParseReplyError::ParseIntError(err))
+                                      }));
         match version {
             1 => (),
             _ => panic!("Version {} not supported", version),
@@ -395,6 +424,20 @@ impl<T: Read + Write> Controller<T> {
         Ok(res)
     }
 
+    // So far we only support one keyword
+    fn cmd_getinfo(&mut self, info_key: &str) -> Result<String, Error> {
+        let reply = try!(self.raw_cmd(format!("GETINFO {}", info_key).as_str()));
+        let reply_line = &reply.lines[0];
+        if !(reply_line.reply.starts_with(info_key) &&
+             reply_line.reply.chars().nth(info_key.len()) == Some('=')) {
+            return Err(Error::ParseReply(ParseReplyError::KeyNotFound));
+        }
+        match &reply_line.data {
+            &Some(ref data) => Ok(data.clone()),
+            &None => Ok(reply_line.reply[info_key.len() + 1..].to_string()),
+        }
+    }
+
     fn cmd_authenticate(&mut self, pwd: &[u8]) -> Result<Reply, Error> {
         self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str())
     }
@@ -416,9 +459,16 @@ fn main() {
     let mut controller = Controller::from_port(9051).unwrap();
     // controller.assert("PROTOCOLINFO");
     controller.authenticate().unwrap();
-    controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara").unwrap();
-    controller.raw_cmd("FOO").unwrap();
-    controller.raw_cmd("BAR").unwrap();
+    // controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara").unwrap();
+    println!("{:?}", controller.raw_cmd("GETINFO md/name/GoldenCapybara"));
+    println!("{:?}", controller.cmd_getinfo("version"));
+    println!("{:?}", controller.cmd_getinfo("md/name/moria1"));
+    println!("{:?}", controller.cmd_getinfo("md/name/GoldenCapybara"));
+    println!("{:?}", controller.cmd_getinfo("traffic/read"));
+    println!("{:?}", controller.cmd_getinfo("traffic/written"));
+    println!("{:?}", controller.cmd_getinfo("foo"));
+    controller.raw_cmd("FOO");
+    controller.raw_cmd("BAR");
     controller.raw_cmd("QUIT").unwrap();
     //    controller.write("PROTOCOLINFO\r\n");
     //    controller.write("PROTOCOLINFO\r\n");
