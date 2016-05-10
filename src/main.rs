@@ -204,6 +204,14 @@ impl Controller<TcpStream> {
             },
         })
     }
+
+    fn connect(&mut self) {
+        unimplemented!();
+    }
+
+    fn close(&mut self) {
+        self.con.raw_stream.shutdown(Shutdown::Both);
+    }
 }
 
 impl<T: Read + Write> Controller<T> {
@@ -245,6 +253,10 @@ impl<T: Read + Write> Controller<T> {
             Err(Error::Reply(rep_err)) => Err(Error::Auth(AuthError::AuthFailed(rep_err))),
             Err(err) => Err(err),
         }
+    }
+
+    fn get_version(&mut self) -> Result<String, Error> {
+        (self.cmd_getinfo("version"))
     }
 
     fn raw_cmd(&mut self, cmd: &str) -> Result<Reply, Error> {
@@ -424,7 +436,10 @@ impl<T: Read + Write> Controller<T> {
         Ok(res)
     }
 
-    // So far we only support one keyword
+    // So far we only support one keyword.
+    // TODO: Supporting multiple keywords would imply returning a dictionary.
+    // The output is not parsed (you are on your own), it's just a string containing the return
+    // value (the 'keyword=' part is stripped).
     fn cmd_getinfo(&mut self, info_key: &str) -> Result<String, Error> {
         let reply = try!(self.raw_cmd(format!("GETINFO {}", info_key).as_str()));
         let reply_line = &reply.lines[0];
