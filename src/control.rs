@@ -1,21 +1,17 @@
-#[macro_use]
-extern crate log;
-extern crate env_logger;
 extern crate regex;
 extern crate rustc_serialize;
 extern crate crypto;
 extern crate rand;
 
-use std::fmt;
 use std::num;
-use std::path::Path;
+// use std::path::Path;
 use std::net::{SocketAddr, TcpStream, Shutdown};
 use std::io;
 use std::io::{Read, Write};
 // use std::str;
 use std::io::{BufReader, BufRead, BufWriter};
 // use std::option::Option;
-use std::collections::HashMap;
+// use std::collections::HashMap;
 use std::fs::File;
 
 use regex::Regex;
@@ -69,7 +65,7 @@ macro_rules! cap_name_or_err {
 // }
 
 #[derive(Debug)]
-enum ReplyStatus {
+pub enum ReplyStatus {
     Positive,
     TempNegative,
     PermNegative,
@@ -78,20 +74,20 @@ enum ReplyStatus {
 }
 
 #[derive(Debug)]
-struct ReplyLine {
+pub struct ReplyLine {
     reply: String,
     data: Option<String>,
 }
 
 #[derive(Debug)]
-struct Reply {
+pub struct Reply {
     //    code: u16,
     //    status: ReplyStatus,
     lines: Vec<ReplyLine>,
 }
 
 #[derive(Debug)]
-enum AuthMethod {
+pub enum AuthMethod {
     Null,
     HashedPassword,
     Cookie,
@@ -99,7 +95,7 @@ enum AuthMethod {
 }
 
 #[derive(Debug)]
-struct ProtocolInfo {
+pub struct ProtocolInfo {
     protocol_info_ver: u8,
     tor_ver: String,
     auth_methods: Vec<AuthMethod>,
@@ -107,7 +103,7 @@ struct ProtocolInfo {
 }
 
 #[derive(Debug)]
-struct AuthChallenge {
+pub struct AuthChallenge {
     server_hash: [u8; 32],
     server_nonce: [u8; 32],
 }
@@ -118,14 +114,14 @@ struct Connection<T: Read + Write> {
     buf_writer: BufWriter<T>,
 }
 
-struct Controller<T: Read + Write> {
+pub struct Controller<T: Read + Write> {
     con: Connection<T>, /*    auth: Auth,
                          *    connection: Connection,
                          *    hash_pass: Option<&str>, */
 }
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     Stream(io::Error),
     StringParse(num::ParseIntError),
     Regex(regex::Error),
@@ -136,7 +132,7 @@ enum Error {
 }
 
 #[derive(Debug)]
-enum RawReplyError {
+pub enum RawReplyError {
     NonNumericStatusCode(num::ParseIntError),
     VaryingStatusCode,
     InvalidReplyMode,
@@ -146,7 +142,7 @@ enum RawReplyError {
 }
 
 #[derive(Debug)]
-enum ParseReplyError {
+pub enum ParseReplyError {
     MissingField,
     ParseIntError(num::ParseIntError),
     RegexCapture,
@@ -155,14 +151,14 @@ enum ParseReplyError {
 }
 
 #[derive(Debug)]
-struct ReplyError {
+pub struct ReplyError {
     code: u16,
     status: ReplyStatus,
     line: String,
 }
 
 #[derive(Debug)]
-enum AuthError {
+pub enum AuthError {
     ServerNotVerified,
     AuthFailed(ReplyError),
 }
@@ -192,7 +188,7 @@ impl From<hex::FromHexError> for Error {
 }
 
 impl Controller<TcpStream> {
-    fn from_port(port: u16) -> Result<Controller<TcpStream>, io::Error> {
+    pub fn from_port(port: u16) -> Result<Controller<TcpStream>, io::Error> {
         let raw_stream = try!(TcpStream::connect(("127.0.0.1", port)));
         let buf_reader = BufReader::new(try!(raw_stream.try_clone()));
         let buf_writer = BufWriter::new(try!(raw_stream.try_clone()));
@@ -205,17 +201,17 @@ impl Controller<TcpStream> {
         })
     }
 
-    fn connect(&mut self) {
+    pub fn connect(&mut self) {
         unimplemented!();
     }
 
-    fn close(&mut self) {
+    pub fn close(&mut self) {
         self.con.raw_stream.shutdown(Shutdown::Both);
     }
 }
 
 impl<T: Read + Write> Controller<T> {
-    fn authenticate(&mut self) -> Result<(), Error> {
+    pub fn authenticate(&mut self) -> Result<(), Error> {
         let protocolinfo = try!(self.cmd_protocolinfo());
 
         let mut rng = rand::thread_rng();
@@ -255,11 +251,11 @@ impl<T: Read + Write> Controller<T> {
         }
     }
 
-    fn get_version(&mut self) -> Result<String, Error> {
+    pub fn get_version(&mut self) -> Result<String, Error> {
         (self.cmd_getinfo("version"))
     }
 
-    fn raw_cmd(&mut self, cmd: &str) -> Result<Reply, Error> {
+    pub fn raw_cmd(&mut self, cmd: &str) -> Result<Reply, Error> {
         debug!("{}", cmd);
         try!(self.con.buf_writer.write_all(cmd.as_bytes()));
         try!(self.con.buf_writer.write_all(b"\r\n"));
@@ -354,7 +350,7 @@ impl<T: Read + Write> Controller<T> {
         //        }
     }
 
-    fn cmd_protocolinfo(&mut self) -> Result<ProtocolInfo, Error> {
+    pub fn cmd_protocolinfo(&mut self) -> Result<ProtocolInfo, Error> {
         let reply = try!(self.raw_cmd("PROTOCOLINFO"));
         // regex for QuotedString = (\\.|[^\"])*
         let re_protocolinfo = try!(Regex::new("^PROTOCOLINFO (?P<version>[0-9]+)$"));
@@ -415,7 +411,7 @@ impl<T: Read + Write> Controller<T> {
         })
     }
 
-    fn cmd_authchallenge(&mut self, client_nonce: &[u8; 32]) -> Result<AuthChallenge, Error> {
+    pub fn cmd_authchallenge(&mut self, client_nonce: &[u8; 32]) -> Result<AuthChallenge, Error> {
         let reply = try!(self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}",
                                               client_nonce.to_hex())
                                           .as_str()));
@@ -440,7 +436,7 @@ impl<T: Read + Write> Controller<T> {
     // TODO: Supporting multiple keywords would imply returning a dictionary.
     // The output is not parsed (you are on your own), it's just a string containing the return
     // value (the 'keyword=' part is stripped).
-    fn cmd_getinfo(&mut self, info_key: &str) -> Result<String, Error> {
+    pub fn cmd_getinfo(&mut self, info_key: &str) -> Result<String, Error> {
         let reply = try!(self.raw_cmd(format!("GETINFO {}", info_key).as_str()));
         let reply_line = &reply.lines[0];
         if !(reply_line.reply.starts_with(info_key) &&
@@ -453,7 +449,7 @@ impl<T: Read + Write> Controller<T> {
         }
     }
 
-    fn cmd_authenticate(&mut self, pwd: &[u8]) -> Result<Reply, Error> {
+    pub fn cmd_authenticate(&mut self, pwd: &[u8]) -> Result<Reply, Error> {
         self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str())
     }
     //    fn connect(mut &self) {
@@ -465,26 +461,4 @@ impl<T: Read + Write> Controller<T> {
     //    fn close(mut &self) {
     //        self.stream.shutdown(Shutdown::Both).unwrap();
     //    }
-}
-
-fn main() {
-    env_logger::init().unwrap();
-
-    info!("Starting Tor Controller!");
-    let mut controller = Controller::from_port(9051).unwrap();
-    // controller.assert("PROTOCOLINFO");
-    controller.authenticate().unwrap();
-    // controller.raw_cmd("GETINFO version md/name/moria1 md/name/GoldenCapybara").unwrap();
-    println!("{:?}", controller.raw_cmd("GETINFO md/name/GoldenCapybara"));
-    println!("{:?}", controller.cmd_getinfo("version"));
-    println!("{:?}", controller.cmd_getinfo("md/name/moria1"));
-    println!("{:?}", controller.cmd_getinfo("md/name/GoldenCapybara"));
-    println!("{:?}", controller.cmd_getinfo("traffic/read"));
-    println!("{:?}", controller.cmd_getinfo("traffic/written"));
-    println!("{:?}", controller.cmd_getinfo("foo"));
-    controller.raw_cmd("FOO");
-    controller.raw_cmd("BAR");
-    controller.raw_cmd("QUIT").unwrap();
-    //    controller.write("PROTOCOLINFO\r\n");
-    //    controller.write("PROTOCOLINFO\r\n");
 }

@@ -1,5 +1,5 @@
 [package]
-name = "rust-tor-controller"
+name = "tor_controller"
 version = "0.1.0"
 authors = ["Dhole <dhole@openmailbox.org>"]
 
