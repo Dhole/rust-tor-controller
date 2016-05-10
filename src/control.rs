@@ -2,10 +2,12 @@ extern crate regex;
 extern crate rustc_serialize;
 extern crate crypto;
 extern crate rand;
+extern crate unix_socket;
 
+use std::net::ToSocketAddrs;
 use std::num;
-// use std::path::Path;
-use std::net::{SocketAddr, TcpStream, Shutdown};
+use std::path::Path;
+use std::net::{TcpStream, Shutdown};
 use std::io;
 use std::io::{Read, Write};
 // use std::str;
@@ -14,6 +16,7 @@ use std::io::{BufReader, BufRead, BufWriter};
 // use std::collections::HashMap;
 use std::fs::File;
 
+use unix_socket::UnixStream;
 use regex::Regex;
 use rustc_serialize::hex;
 use rustc_serialize::hex::{ToHex, FromHex};
@@ -187,26 +190,61 @@ impl From<hex::FromHexError> for Error {
     }
 }
 
-impl Controller<TcpStream> {
-    pub fn from_port(port: u16) -> Result<Controller<TcpStream>, io::Error> {
-        let raw_stream = try!(TcpStream::connect(("127.0.0.1", port)));
+impl Connection<TcpStream> {
+    fn connect<A: ToSocketAddrs>(addr: A) -> Result<Connection<TcpStream>, io::Error> {
+        let raw_stream = try!(TcpStream::connect(addr));
         let buf_reader = BufReader::new(try!(raw_stream.try_clone()));
         let buf_writer = BufWriter::new(try!(raw_stream.try_clone()));
-        Ok(Controller {
-            con: Connection {
-                raw_stream: raw_stream,
-                buf_reader: buf_reader,
-                buf_writer: buf_writer,
-            },
+        Ok(Connection {
+            raw_stream: raw_stream,
+            buf_reader: buf_reader,
+            buf_writer: buf_writer,
         })
     }
 
-    pub fn connect(&mut self) {
-        unimplemented!();
+    fn close(&mut self) -> Result<(), io::Error> {
+        self.raw_stream.shutdown(Shutdown::Both)
+    }
+}
+
+impl Connection<UnixStream> {
+    fn connect<P: AsRef<Path>>(path: P) -> Result<Connection<UnixStream>, io::Error> {
+        let raw_stream = try!(UnixStream::connect(path));
+        let buf_reader = BufReader::new(try!(raw_stream.try_clone()));
+        let buf_writer = BufWriter::new(try!(raw_stream.try_clone()));
+        Ok(Connection {
+            raw_stream: raw_stream,
+            buf_reader: buf_reader,
+            buf_writer: buf_writer,
+        })
     }
 
-    pub fn close(&mut self) {
-        self.con.raw_stream.shutdown(Shutdown::Both);
+    fn close(&mut self) -> Result<(), io::Error> {
+        self.raw_stream.shutdown(Shutdown::Both)
+    }
+}
+
+impl Controller<TcpStream> {
+    pub fn from_addr<A: ToSocketAddrs>(addr: A) -> Result<Controller<TcpStream>, io::Error> {
+        Ok(Controller { con: try!(Connection::<TcpStream>::connect(addr)) })
+    }
+
+    pub fn from_port(port: u16) -> Result<Controller<TcpStream>, io::Error> {
+        Self::from_addr(("127.0.0.1", port))
+    }
+
+    pub fn close(&mut self) -> Result<(), io::Error> {
+        self.con.close()
+    }
+}
+
+impl Controller<TcpStream> {
+    pub fn from_socket_file<P: AsRef<Path>>(path: P) -> Result<Controller<UnixStream>, io::Error> {
+        Ok(Controller { con: try!(Connection::<UnixStream>::connect(path)) })
+    }
+
+    pub fn close(&mut self) -> Result<(), io::Error> {
+        self.con.close()
     }
 }
 
@@ -338,16 +376,6 @@ impl<T: Read + Write> Controller<T> {
             status: status,
             line: reply_lines[0].reply.clone(),
         }))
-
-        //        if let Some(reply_line) = reply_lines.iter().nth(0) {
-        //            return Err(Error::Reply(ReplyError {
-        //                code: status_code,
-        //                status: status,
-        //                line: reply_line.reply.clone(),
-        //            }));
-        //        } else {
-        //            return Err(Error::RawReply(RawReplyError::InvalidReply));
-        //        }
     }
 
     pub fn cmd_protocolinfo(&mut self) -> Result<ProtocolInfo, Error> {
@@ -397,7 +425,8 @@ impl<T: Read + Write> Controller<T> {
                 Some("VERSION") => {
                     let ver = re_cap_or_err!(re_tor_version, &line.reply);
                     tor_version = cap_name_or_err!(ver, "tor_version").to_string();
-                    let opt_arguments = cap_name_or_err!(ver, "opt_arguments");
+                    // Not used so far
+                    // let opt_arguments = cap_name_or_err!(ver, "opt_arguments");
                 }
                 Some("OK") => (), // End of PROTOCOLINFO reply
                 _ => (), // Unrecognized InfoLine
@@ -452,13 +481,15 @@ impl<T: Read + Write> Controller<T> {
     pub fn cmd_authenticate(&mut self, pwd: &[u8]) -> Result<Reply, Error> {
         self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str())
     }
-    //    fn connect(mut &self) {
-    //        match self.connection {
-    //            Tcp(addr) => self.stream = TcpStream::connect(addr).unwrap(),
-    //            Unix(path) => unimplemented!(),
-    //        }
-    //    }
-    //    fn close(mut &self) {
-    //        self.stream.shutdown(Shutdown::Both).unwrap();
-    //    }
+
+    pub fn cmd_quit(&mut self) -> Result<(), Error> {
+        self.raw_cmd("QUIT").map(|_| ())
+    }
+}
+
+impl<T: Read + Write> Drop for Controller<T> {
+    // We try to be nice here
+    fn drop(&mut self) {
+        self.cmd_quit().unwrap_or(());
+    }
 }

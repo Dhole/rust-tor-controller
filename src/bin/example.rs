@@ -20,7 +20,7 @@ fn main() {
     println!("{:?}", controller.cmd_getinfo("traffic/read"));
     println!("{:?}", controller.cmd_getinfo("traffic/written"));
     println!("{:?}", controller.cmd_getinfo("foo"));
-    controller.raw_cmd("QUIT").unwrap();
+    // controller.raw_cmd("QUIT").unwrap();
     //    controller.write("PROTOCOLINFO\r\n");
     //    controller.write("PROTOCOLINFO\r\n");
 }
