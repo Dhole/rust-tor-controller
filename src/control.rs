@@ -252,6 +252,9 @@ impl<T: Read + Write> Controller<T> {
     pub fn authenticate(&mut self) -> Result<(), Error> {
         let protocolinfo = try!(self.cmd_protocolinfo());
 
+        // We have no intention to support COOKIE method, from the spec: "the COOKIE authentication
+        // method has been deprecated and will be removed from a future version of Tor."
+
         let mut rng = rand::thread_rng();
         let client_nonce = rng.gen::<[u8; 32]>();
         let authchallenge = try!(self.cmd_authchallenge(&client_nonce));
@@ -378,6 +381,7 @@ impl<T: Read + Write> Controller<T> {
         }))
     }
 
+    // PROTOCOLINFO
     pub fn cmd_protocolinfo(&mut self) -> Result<ProtocolInfo, Error> {
         let reply = try!(self.raw_cmd("PROTOCOLINFO"));
         // regex for QuotedString = (\\.|[^\"])*
@@ -440,6 +444,7 @@ impl<T: Read + Write> Controller<T> {
         })
     }
 
+    // AUTHCHALLENGE
     pub fn cmd_authchallenge(&mut self, client_nonce: &[u8; 32]) -> Result<AuthChallenge, Error> {
         let reply = try!(self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}",
                                               client_nonce.to_hex())
@@ -465,6 +470,7 @@ impl<T: Read + Write> Controller<T> {
     // TODO: Supporting multiple keywords would imply returning a dictionary.
     // The output is not parsed (you are on your own), it's just a string containing the return
     // value (the 'keyword=' part is stripped).
+    // GETINFO
     pub fn cmd_getinfo(&mut self, info_key: &str) -> Result<String, Error> {
         let reply = try!(self.raw_cmd(format!("GETINFO {}", info_key).as_str()));
         let reply_line = &reply.lines[0];
@@ -478,13 +484,40 @@ impl<T: Read + Write> Controller<T> {
         }
     }
 
+    // AUTHENTICATE
     pub fn cmd_authenticate(&mut self, pwd: &[u8]) -> Result<Reply, Error> {
         self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str())
     }
 
+    // QUIT
     pub fn cmd_quit(&mut self) -> Result<(), Error> {
         self.raw_cmd("QUIT").map(|_| ())
     }
+
+    // SETCONF
+    // RESETCONF
+    // GETCONF
+    // SETEVENTS
+    // SAVECONF
+    // SIGNAL
+    // MAPADDRESS
+    // EXTENDCIRCUIT
+    // SETCIRCUITPURPOSE
+    // SETROUTERPURPOSE
+    // ATTACHSTREAM
+    // POSTDESCRIPTOR
+    // REDIRECTSTREAM
+    // CLOSESTREAM
+    // CLOSECIRCUIT
+    // USEFEATURE
+    // RESOLVE
+    // LOADCONF
+    // TAKEOWNERSHIP
+    // DROPGUARDS
+    // HSFETCH
+    // ADD_ONION
+    // DEL_ONION
+    // HSPOST
 }
 
 impl<T: Read + Write> Drop for Controller<T> {
