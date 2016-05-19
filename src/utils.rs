@@ -34,10 +34,11 @@ pub enum Error {
     TorVersionTooShort,
 }
 
-pub fn get_system_tor_version() -> Result<TorVersion, Error> {
+pub fn get_system_tor_version(tor_cmd: Option<&str>) -> Result<TorVersion, Error> {
+    let tor_cmd = tor_cmd.unwrap_or("tor");
     let begin = "Tor version ";
     let end = ".\n";
-    let output = try!(Command::new("tor")
+    let output = try!(Command::new(tor_cmd)
                           .arg("--version")
                           .output()
                           .map_err(|err| Error::Command(err)));

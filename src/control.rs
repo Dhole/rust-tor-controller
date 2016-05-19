@@ -238,7 +238,7 @@ impl Controller<TcpStream> {
     }
 }
 
-impl Controller<TcpStream> {
+impl Controller<UnixStream> {
     pub fn from_socket_file<P: AsRef<Path>>(path: P) -> Result<Controller<UnixStream>, io::Error> {
         Ok(Controller { con: try!(Connection::<UnixStream>::connect(path)) })
     }
@@ -385,7 +385,7 @@ impl<T: Read + Write> Controller<T> {
     pub fn cmd_protocolinfo(&mut self) -> Result<ProtocolInfo, Error> {
         let reply = try!(self.raw_cmd("PROTOCOLINFO"));
         // regex for QuotedString = (\\.|[^\"])*
-        let re_protocolinfo = try!(Regex::new("^PROTOCOLINFO (?P<version>[0-9]+)$"));
+        let re_protocolinfo = try!(Regex::new(r"^PROTOCOLINFO (?P<version>[0-9]+)$"));
         let re_tor_version = try!(Regex::new("^VERSION Tor=\"(?P<tor_version>(\\.|[^\"])*)\"[ ]*\
                                         (?P<opt_arguments>.*)$"));
         let re_auth = try!(Regex::new("^AUTH METHODS=(?P<auth_methods>[A-Z,]+)[ ]*\

@@ -8,5 +8,5 @@ use tor_controller::utils;
 fn main() {
     env_logger::init().unwrap();
 
-    println!("Tor Version = {:?}", utils::get_system_tor_version());
+    println!("Tor Version = {:?}", utils::get_system_tor_version(None));
 }
