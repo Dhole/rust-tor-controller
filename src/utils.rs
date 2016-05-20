@@ -1,5 +1,5 @@
 use std::io;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use regex;
 use regex::Regex;
 use std::string;

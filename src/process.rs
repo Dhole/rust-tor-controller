@@ -1,9 +1,12 @@
 extern crate regex;
+extern crate timer;
+extern crate chrono;
 
 use std::io;
-use std::process::{Command, Stdio, Child};
+use std::process::{Command, Stdio, Child, ChildStdout};
 use std::io::{BufReader, BufRead};
 use regex::Regex;
+use std::mem;
 
 #[derive(Debug)]
 pub enum Error {
@@ -12,15 +15,17 @@ pub enum Error {
     InvalidLogLine,
     InvalidBootstrapLine(String),
     Regex(regex::Error),
+    ProcessNotStarted,
 }
 
-#[derive(Debug)]
 pub struct TorProcess {
     tor_cmd: String,
     args: Vec<String>,
     torrc_path: Option<String>,
     completion_percent: u8,
     timeout: u32,
+    pub stdout: Option<BufReader<ChildStdout>>,
+    pub process: Option<Child>,
 }
 
 impl TorProcess {
@@ -31,6 +36,8 @@ impl TorProcess {
             torrc_path: None,
             completion_percent: 100 as u8,
             timeout: 0 as u32,
+            stdout: None,
+            process: None,
         }
     }
 
@@ -66,7 +73,7 @@ impl TorProcess {
         self
     }
 
-    pub fn launch(&self) -> Result<(), Error> {
+    pub fn launch(&mut self) -> Result<&mut Self, Error> {
         let mut tor = Command::new(&self.tor_cmd);
         if let Some(ref torrc_path) = self.torrc_path {
             tor.args(&vec!["-f", torrc_path]);
@@ -77,15 +84,24 @@ impl TorProcess {
                                       .stderr(Stdio::piped())
                                       .spawn()
                                       .map_err(|err| Error::Process(err)));
-        let mut stdout = BufReader::new(tor_process.stdout.unwrap());
+        // let tor_process_c = tor_process.clone();
+        self.stdout = Some(BufReader::new(mem::replace(&mut tor_process.stdout, None).unwrap()));
+        self.process = Some(tor_process);
 
+        // let timer = timer::Timer::new();
+        // timer.schedule_with_delay(chrono::Duration::seconds(self.timeout as i64),
+        //                          || self.kill().unwrap_or(()));
         let re_bootstrap = try!(Regex::new(r"^\[notice\] Bootstrapped (?P<perc>[0-9]+)%: ")
                                     .map_err(|err| Error::Regex(err)));
 
         let timestamp_len = "May 16 02:50:08.792".len();
         let mut raw_line = String::new();
         let mut warnings = Vec::new();
-        while try!(stdout.read_line(&mut raw_line).map_err(|err| Error::Process(err))) > 0 {
+        while try!(self.stdout
+                       .as_mut()
+                       .unwrap()
+                       .read_line(&mut raw_line)
+                       .map_err(|err| Error::Process(err))) > 0 {
             if raw_line.len() < timestamp_len + 1 {
                 return Err(Error::InvalidLogLine);
             } else {
@@ -95,11 +111,10 @@ impl TorProcess {
                 match line.split(' ').nth(0) {
                     Some("[notice]") => {
                         if let Some("Bootstrapped") = line.split(' ').nth(1) {
-                            println!("{}", line);
                             let cap = try!(re_bootstrap.captures(line)
-                                        .ok_or(Error::InvalidBootstrapLine("A".to_string())));
+                                        .ok_or(Error::InvalidBootstrapLine(line.to_string())));
                             let perc_srt = try!(cap.name("perc")
-                                        .ok_or(Error::InvalidBootstrapLine("B".to_string())));
+                                        .ok_or(Error::InvalidBootstrapLine(line.to_string())));
                             let perc = try!(perc_srt.parse::<u8>().map_err(|_| {
                                 Error::InvalidBootstrapLine(line.to_string())
                             }));
@@ -115,7 +130,21 @@ impl TorProcess {
             }
             raw_line.clear();
         }
-        // tor_process.kill().unwrap();
-        Ok(())
+        Ok(self)
+    }
+
+    pub fn kill(&mut self) -> Result<(), Error> {
+        if let Some(ref mut process) = self.process {
+            Ok(try!(process.kill().map_err(|err| Error::Process(err))))
+        } else {
+            Err(Error::ProcessNotStarted)
+        }
+    }
+}
+
+impl Drop for TorProcess {
+    // kill the child
+    fn drop(&mut self) {
+        self.kill().unwrap_or(());
     }
 }
