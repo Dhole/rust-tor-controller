@@ -3,9 +3,10 @@ extern crate timer;
 extern crate chrono;
 
 use std::io;
-use std::time::Instant;
+use std::thread;
 use std::process::{Command, Stdio, Child, ChildStdout};
 use std::io::{BufReader, BufRead};
+use std::sync::mpsc::channel;
 use regex::Regex;
 
 #[derive(Debug)]
@@ -85,60 +86,72 @@ impl TorProcess {
                                       .stderr(Stdio::piped())
                                       .spawn()
                                       .map_err(|err| Error::Process(err)));
-        self.stdout = Some(BufReader::new(tor_process.stdout.take().unwrap()));
+        let mut stdout = BufReader::new(tor_process.stdout.take().unwrap());
         self.process = Some(tor_process);
 
-        // let timer = timer::Timer::new();
-        // timer.schedule_with_delay(chrono::Duration::seconds(self.timeout as i64),
-        //                          || self.kill().unwrap_or(()));
+        let completion_percent = self.completion_percent;
+
         let re_bootstrap = try!(Regex::new(r"^\[notice\] Bootstrapped (?P<perc>[0-9]+)%: ")
                                     .map_err(|err| Error::Regex(err)));
 
-        let timestamp_len = "May 16 02:50:08.792".len();
-        let mut warnings = Vec::new();
-        let mut timeout = false;
+        let (stdout_tx, stdout_rx) = channel();
+        let stdout_timeout_tx = stdout_tx.clone();
 
-        let start_time = Instant::now();
+        let timer = timer::Timer::new();
+        let _guard = timer.schedule_with_delay(chrono::Duration::seconds(self.timeout as i64),
+                                               move || {
+                                                   stdout_timeout_tx.send(Err(Error::Timeout))
+                                                                    .unwrap_or(());
+                                               });
+        let stdout_thread = thread::spawn(move || {
+            let timestamp_len = "May 16 02:50:08.792".len();
+            let mut warnings = Vec::new();
+            let mut raw_line = String::new();
 
-        for raw_line in self.stdout.as_mut().unwrap().lines() {
-            let raw_line = try!(raw_line.map_err(|err| Error::Process(err)));
-            if raw_line.len() < timestamp_len + 1 {
-                return Err(Error::InvalidLogLine);
-            }
-            let timestamp = &raw_line[..timestamp_len];
-            let line = &raw_line[timestamp_len + 1..raw_line.len()];
-            debug!("{} {}", timestamp, line);
-            match line.split(' ').nth(0) {
-                Some("[notice]") => {
-                    if let Some("Bootstrapped") = line.split(' ').nth(1) {
-                        let cap = try!(re_bootstrap.captures(line)
+            while try!(stdout.read_line(&mut raw_line).map_err(|err| Error::Process(err))) > 0 {
+                {
+                    if raw_line.len() < timestamp_len + 1 {
+                        return Err(Error::InvalidLogLine);
+                    }
+                    let timestamp = &raw_line[..timestamp_len];
+                    let line = &raw_line[timestamp_len + 1..raw_line.len() - 1];
+                    debug!("{} {}", timestamp, line);
+                    match line.split(' ').nth(0) {
+                        Some("[notice]") => {
+                            if let Some("Bootstrapped") = line.split(' ').nth(1) {
+                                let cap = try!(re_bootstrap.captures(line)
                                         .ok_or(Error::InvalidBootstrapLine(line.to_string())));
-                        let perc_srt = try!(cap.name("perc")
+                                let perc_srt = try!(cap.name("perc")
                                         .ok_or(Error::InvalidBootstrapLine(line.to_string())));
-                        let perc = try!(perc_srt.parse::<u8>().map_err(|_| {
-                            Error::InvalidBootstrapLine(line.to_string())
-                        }));
-                        if perc >= self.completion_percent {
-                            break;
+                                let perc = try!(perc_srt.parse::<u8>().map_err(|_| {
+                                    Error::InvalidBootstrapLine(line.to_string())
+                                }));
+                                if perc >= completion_percent {
+                                    break;
+                                }
+                            }
                         }
+                        Some("[warn]") => warnings.push(line.to_string()),
+                        Some("[err]") => return Err(Error::Tor(line.to_string(), warnings)),
+                        _ => (),
                     }
                 }
-                Some("[warn]") => warnings.push(line.to_string()),
-                Some("[err]") => return Err(Error::Tor(line.to_string(), warnings)),
-                _ => (),
+                raw_line.clear();
             }
-            // This is not the ideal way of handling the timeout, as it is only checked as long as
-            // the process keeps outputing lines by stdout.  With a non-blocking stdout this could
-            // be done in the proper way.
-            if start_time.elapsed().as_secs() >= self.timeout as u64 {
-                timeout = true;
-                break;
+            stdout_tx.send(Ok(())).unwrap_or(());
+            return Ok(stdout);
+        });
+        for stdout_line in stdout_rx {
+            match stdout_line {
+                Ok(()) => break,
+                Err(err) => {
+                    self.kill().unwrap_or(());
+                    return Err(err);
+                }
             }
         }
-        if timeout {
-            self.kill().unwrap_or(());
-            return Err(Error::Timeout);
-        }
+        let stdout = stdout_thread.join().unwrap().unwrap();
+        self.stdout = Some(stdout);
         Ok(self)
     }
 
