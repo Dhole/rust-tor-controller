@@ -15,6 +15,7 @@ use std::io::{BufReader, BufRead, BufWriter};
 // use std::option::Option;
 // use std::collections::HashMap;
 use std::fs::File;
+use std::fmt;
 
 use unix_socket::UnixStream;
 use regex::Regex;
@@ -111,6 +112,98 @@ pub struct AuthChallenge {
     server_nonce: [u8; 32],
 }
 
+#[derive(Debug)]
+pub struct AddOnion {
+    pub key: OnionKey,
+    pub flags: Vec<OnionFlags>,
+    pub ports: Vec<(u16, Option<u16>)>,
+    pub client_auths: Vec<OnionClientAuth>,
+}
+
+impl fmt::Display for AddOnion {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        try!(write!(f, "ADD_ONION "));
+        try!(write!(f, "{}", self.key));
+        if !self.flags.is_empty() {
+            try!(write!(f, " "));
+            try!(write_join(f, &self.flags, ","));
+        }
+        for &(a, b) in &self.ports {
+            match b {
+                None => try!(write!(f, " Port={}", a)),
+                Some(n) => try!(write!(f, " Port={},{}", a, n)),
+            }
+        }
+        for client_auth in &self.client_auths {
+            try!(write!(f, " {}", client_auth));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum OnionKey {
+    New(KeyType),
+    Rsa1024(String),
+}
+
+impl fmt::Display for OnionKey {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &OnionKey::New(ref key_type) => write!(f, "NEW:{}", key_type),
+            &OnionKey::Rsa1024(ref key) => write!(f, "RSA1024:{}", key),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum KeyType {
+    Rsa1024,
+    Best,
+}
+
+impl fmt::Display for KeyType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &KeyType::Rsa1024 => write!(f, "RSA1024"),
+            &KeyType::Best => write!(f, "BEST"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum OnionFlags {
+    DiscardPK,
+    Detach,
+    BasicAuth,
+}
+
+impl fmt::Display for OnionFlags {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &OnionFlags::DiscardPK => write!(f, "DiscardPK"),
+            &OnionFlags::Detach => write!(f, "Detach"),
+            &OnionFlags::BasicAuth => write!(f, "BasicAuth"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct OnionClientAuth {
+    client_name: String,
+    client_blob: Option<String>,
+}
+
+impl fmt::Display for OnionClientAuth {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        try!(write!(f, "ClientAuth={}", self.client_name));
+        if let &Some(ref client_blob) = &self.client_blob {
+            try!(write!(f, ":{}", client_blob));
+        }
+        Ok(())
+    }
+}
+
 struct Connection<T: Read + Write> {
     raw_stream: T,
     buf_reader: BufReader<T>,
@@ -166,6 +259,11 @@ pub enum AuthError {
     AuthFailed(ReplyError),
 }
 
+#[derive(Debug)]
+pub enum OnionError {
+    NoPortGiven,
+}
+
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         Error::Stream(err)
@@ -188,6 +286,19 @@ impl From<hex::FromHexError> for Error {
     fn from(err: hex::FromHexError) -> Self {
         Error::ParseReply(ParseReplyError::FromHexError(err))
     }
+}
+
+fn write_join<T: fmt::Display>(f: &mut fmt::Formatter, elems: &Vec<T>, sep: &str) -> fmt::Result {
+    let mut first = true;
+    for e in elems {
+        if first {
+            first = false;
+        } else {
+            try!(write!(f, "{}", sep));
+        }
+        try!(write!(f, "{}", e));
+    }
+    Ok(())
 }
 
 impl Connection<TcpStream> {
@@ -293,7 +404,7 @@ impl<T: Read + Write> Controller<T> {
     }
 
     pub fn get_version(&mut self) -> Result<String, Error> {
-        (self.cmd_getinfo("version"))
+        self.cmd_getinfo("version")
     }
 
     pub fn raw_cmd(&mut self, cmd: &str) -> Result<Reply, Error> {
@@ -343,9 +454,8 @@ impl<T: Read + Write> Controller<T> {
 
                 if status_code_str == "" {
                     status_code_str = String::from(code);
-                    status_code = try!(status_code_str.parse::<u16>().map_err(|err| {
-                        Error::RawReply(RawReplyError::NonNumericStatusCode(err))
-                    }));
+                    status_code = try!(status_code_str.parse::<u16>()
+                        .map_err(|err| Error::RawReply(RawReplyError::NonNumericStatusCode(err))));
                 } else {
                     // TODO Parse Async replies here
                     if code != status_code_str {
@@ -395,9 +505,7 @@ impl<T: Read + Write> Controller<T> {
         let prot_inf = re_cap_or_err!(re_protocolinfo, reply.lines[0].reply.as_str());
         let version_str = cap_name_or_err!(prot_inf, "version");
         let version = try!(version_str.parse::<u8>()
-                                      .map_err(|err| {
-                                          Error::ParseReply(ParseReplyError::ParseIntError(err))
-                                      }));
+            .map_err(|err| Error::ParseReply(ParseReplyError::ParseIntError(err))));
         match version {
             1 => (),
             _ => panic!("Version {} not supported", version),
@@ -412,15 +520,15 @@ impl<T: Read + Write> Controller<T> {
                 Some("AUTH") => {
                     let auth = re_cap_or_err!(re_auth, &line.reply);
                     auth_methods = cap_name_or_err!(auth, "auth_methods")
-                                       .split(',')
-                                       .map(|x| match x {
-                                           "NULL" => AuthMethod::Null,
-                                           "HASHEDPASSWORD" => AuthMethod::HashedPassword,
-                                           "COOKIE" => AuthMethod::Cookie,
-                                           "SAFECOOKIE" => AuthMethod::SafeCookie,
-                                           _ => panic!("Auth method {} not supported", x),
-                                       })
-                                       .collect::<Vec<_>>();
+                        .split(',')
+                        .map(|x| match x {
+                            "NULL" => AuthMethod::Null,
+                            "HASHEDPASSWORD" => AuthMethod::HashedPassword,
+                            "COOKIE" => AuthMethod::Cookie,
+                            "SAFECOOKIE" => AuthMethod::SafeCookie,
+                            _ => panic!("Auth method {} not supported", x),
+                        })
+                        .collect::<Vec<_>>();
                     let maybe_cookie_files = cap_name_or_err!(auth, "maybe_cookie_files");
                     for caps in re_cookie_file.captures_iter(maybe_cookie_files) {
                         cookie_files.push(cap_name_or_err!(caps, "cookie_file").to_string());
@@ -494,6 +602,34 @@ impl<T: Read + Write> Controller<T> {
         self.raw_cmd("QUIT").map(|_| ())
     }
 
+    // ADD_ONION
+    pub fn cmd_add_onion(&mut self, add_onion: AddOnion) -> Result<(), Error> {
+        // if add_onion.ports.is_empty() {
+        //    return Err(OnionError::NoPortGiven);
+        // }
+        // TODO: check client_auths.ClientName(s) is from 1 to 16 chars from A-Za-z0-9+-_
+        let re_service = try!(Regex::new(r"^Service-ID=(?P<service_id>[^ ]+)$"));
+        let re_sk = try!(Regex::new(r"^PrivateKey=(?P<key_type>[^ ]+):(?P<sk>[^ ]+)$"));
+        let re_client_auth = try!(Regex::new(r"^ClientAuth=(?P<client_name>[^ ]+):\
+                                             (?P<client_blob>[^ ]+)$"));
+        let cmd = format!("{}", add_onion);
+        let reply = try!(self.raw_cmd(cmd.as_str()));
+        let cap_service = re_cap_or_err!(re_service, reply.lines[0].reply.as_str());
+
+        let mut skip = 1;
+        if !add_onion.flags.contains(&OnionFlags::DiscardPK) {
+            let cap_sk = re_cap_or_err!(re_sk, reply.lines[1].reply.as_str());
+            skip = 2;
+        }
+
+        for line in reply.lines.iter().skip(skip) {
+            let reply = &line.reply;
+            let cap_client_auth = re_cap_or_err!(re_client_auth, reply.as_str());
+        }
+        Ok(())
+    }
+    // DEL_ONION
+
     // SETCONF
     // RESETCONF
     // GETCONF
@@ -515,8 +651,6 @@ impl<T: Read + Write> Controller<T> {
     // TAKEOWNERSHIP
     // DROPGUARDS
     // HSFETCH
-    // ADD_ONION
-    // DEL_ONION
     // HSPOST
 }
 

@@ -75,6 +75,8 @@ impl TorProcess {
         self
     }
 
+    // The tor process will have its stdout piped, so if the stdout lines are not consumed they
+    // will keep accumulating over time, increasing the consumed memory.
     pub fn launch(&mut self) -> Result<&mut Self, Error> {
         let mut tor = Command::new(&self.tor_cmd);
         if let Some(ref torrc_path) = self.torrc_path {

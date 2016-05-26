@@ -19,13 +19,15 @@ The library should provide an interface similar to stem [2].
 - Implement TCP connection.
 - Implement Unix socket connection.
 - Implement AuthCookie authentication.
+- Implement a utility to launch the tor daemon
 
 ## TODO
 
 - Implement the different methods of authentication (Cookie, HashedPassword,
   Null).
 - Unquote strings.
-- Implement a utility to launch the tor daemon with a given configuration.
 - Implement async events, probably by registering callbacks and keeping a thread
   running and reading incoming messages.
+- Allow passing a configuration to the tor process.
+- Add creation, deletion and listing of hidden services.
 - ...
