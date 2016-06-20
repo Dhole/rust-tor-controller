@@ -190,8 +190,8 @@ impl fmt::Display for OnionFlags {
 
 #[derive(Debug)]
 pub struct OnionClientAuth {
-    client_name: String,
-    client_blob: Option<String>,
+    pub client_name: String,
+    pub client_blob: Option<String>,
 }
 
 impl fmt::Display for OnionClientAuth {
@@ -202,6 +202,13 @@ impl fmt::Display for OnionClientAuth {
         }
         Ok(())
     }
+}
+
+#[derive(Debug)]
+pub struct AddOnionReply {
+    pub service_id: String,
+    pub sk: Option<String>,
+    pub client_auths: Vec<(String, String)>,
 }
 
 struct Connection<T: Read + Write> {
@@ -603,30 +610,47 @@ impl<T: Read + Write> Controller<T> {
     }
 
     // ADD_ONION
-    pub fn cmd_add_onion(&mut self, add_onion: AddOnion) -> Result<(), Error> {
+    pub fn cmd_add_onion(&mut self, add_onion: AddOnion) -> Result<AddOnionReply, Error> {
         // if add_onion.ports.is_empty() {
         //    return Err(OnionError::NoPortGiven);
         // }
         // TODO: check client_auths.ClientName(s) is from 1 to 16 chars from A-Za-z0-9+-_
-        let re_service = try!(Regex::new(r"^Service-ID=(?P<service_id>[^ ]+)$"));
+        let re_service = try!(Regex::new(r"^ServiceID=(?P<service_id>[^ ]+)$"));
         let re_sk = try!(Regex::new(r"^PrivateKey=(?P<key_type>[^ ]+):(?P<sk>[^ ]+)$"));
-        let re_client_auth = try!(Regex::new(r"^ClientAuth=(?P<client_name>[^ ]+):\
+        let re_client_auth = try!(Regex::new("^ClientAuth=(?P<client_name>[^ ]+):\
                                              (?P<client_blob>[^ ]+)$"));
         let cmd = format!("{}", add_onion);
         let reply = try!(self.raw_cmd(cmd.as_str()));
         let cap_service = re_cap_or_err!(re_service, reply.lines[0].reply.as_str());
+        let service_id = cap_name_or_err!(cap_service, "service_id").to_string();
 
         let mut skip = 1;
-        if !add_onion.flags.contains(&OnionFlags::DiscardPK) {
-            let cap_sk = re_cap_or_err!(re_sk, reply.lines[1].reply.as_str());
-            skip = 2;
-        }
+        let sk = match add_onion.key {
+            OnionKey::New(_) => {
+                if !add_onion.flags.contains(&OnionFlags::DiscardPK) {
+                    let cap_sk = re_cap_or_err!(re_sk, reply.lines[1].reply.as_str());
+                    skip = 2;
+                    Some(cap_name_or_err!(cap_sk, "sk").to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
 
-        for line in reply.lines.iter().skip(skip) {
+        let mut client_auths = Vec::new();
+        for line in reply.lines.iter().skip(skip).take(add_onion.client_auths.len()) {
             let reply = &line.reply;
             let cap_client_auth = re_cap_or_err!(re_client_auth, reply.as_str());
+            let client_name = cap_name_or_err!(cap_client_auth, "client_name").to_string();
+            let client_blob = cap_name_or_err!(cap_client_auth, "client_blob").to_string();
+            client_auths.push((client_name, client_blob));
         }
-        Ok(())
+        Ok(AddOnionReply {
+            service_id: service_id,
+            sk: sk,
+            client_auths: client_auths,
+        })
     }
     // DEL_ONION
 
