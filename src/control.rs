@@ -490,7 +490,6 @@ impl<T: Read + Write> Controller<T> {
             Some('6') => ReplyStatus::Async,
             _ => return Err(Error::RawReply(RawReplyError::InvalidStatusCode)),
         };
-
         Err(Error::Reply(ReplyError {
             code: status_code,
             status: status,
@@ -657,8 +656,10 @@ impl<T: Read + Write> Controller<T> {
     // SETCONF
     // RESETCONF
     // GETCONF
-    // SETEVENTS
+    // LOADCONF
     // SAVECONF
+
+    // SETEVENTS
     // SIGNAL
     // MAPADDRESS
     // EXTENDCIRCUIT
@@ -671,7 +672,6 @@ impl<T: Read + Write> Controller<T> {
     // CLOSECIRCUIT
     // USEFEATURE
     // RESOLVE
-    // LOADCONF
     // TAKEOWNERSHIP
     // DROPGUARDS
     // HSFETCH
