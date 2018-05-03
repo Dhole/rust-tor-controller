@@ -38,12 +38,12 @@ pub fn get_system_tor_version(tor_cmd: Option<&str>) -> Result<TorVersion, Error
     let tor_cmd = tor_cmd.unwrap_or("tor");
     let begin = "Tor version ";
     let end = ".\n";
-    let output = try!(Command::new(tor_cmd)
-                          .arg("--version")
-                          .output()
-                          .map_err(|err| Error::Command(err)));
-    let tor_version_str = try!(String::from_utf8(output.stdout)
-                                   .map_err(|err| Error::CommandOutput(err)));
+    let output = Command::new(tor_cmd)
+        .arg("--version")
+        .output()
+        .map_err(|err| Error::Command(err))?;
+    let tor_version_str = String::from_utf8(output.stdout)
+        .map_err(|err| Error::CommandOutput(err))?;
     if tor_version_str.len() < begin.len() + end.len() {
         return Err(Error::TorVersionTooShort);
     }
@@ -52,13 +52,13 @@ pub fn get_system_tor_version(tor_cmd: Option<&str>) -> Result<TorVersion, Error
 }
 
 pub fn parse_tor_version(tor_version_str: &str) -> Result<TorVersion, Error> {
-    let re_tor_version_details = try!(Regex::new("^(?P<major>[0-9]+)[.]\
+    let re_tor_version_details = Regex::new("^(?P<major>[0-9]+)[.]\
                                              (?P<minor>[0-9]+)[.]\
                                              (?P<micro>[0-9]+)[.]\
                                              (?P<patch_level>[0-9]+)\
                                              (?P<status_tag>[-][^ ]*)?\
                                              (?P<extra_info> [(].*[)])?$")
-                                          .map_err(|err| Error::Regex(err)));
+        .map_err(|err| Error::Regex(err))?;
     let ver_cap = match re_tor_version_details.captures(tor_version_str) {
         Some(cap) => cap,
         None => return Err(Error::RegexCapture),

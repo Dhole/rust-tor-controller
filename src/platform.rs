@@ -13,7 +13,7 @@ mod unix {
 
     impl Controller<UnixStream> {
         pub fn from_socket_file<P: AsRef<Path>>(path: P) -> Result<Controller<UnixStream>, io::Error> {
-            Ok(Controller { con: try!(Connection::<UnixStream>::connect(path)) })
+            Ok(Controller { con: Connection::<UnixStream>::connect(path)? })
         }
 
         pub fn close(&mut self) -> Result<(), io::Error> {
@@ -25,14 +25,10 @@ mod unix {
 
     impl Connection<UnixStream> {
         fn connect<P: AsRef<Path>>(path: P) -> Result<Connection<UnixStream>, io::Error> {
-            let raw_stream = try!(UnixStream::connect(path));
-            let buf_reader = BufReader::new(try!(raw_stream.try_clone()));
-            let buf_writer = BufWriter::new(try!(raw_stream.try_clone()));
-            Ok(Connection {
-                raw_stream: raw_stream,
-                buf_reader: buf_reader,
-                buf_writer: buf_writer,
-            })
+            let raw_stream = UnixStream::connect(path)?;
+            let buf_reader = BufReader::new(raw_stream.try_clone()?);
+            let buf_writer = BufWriter::new(raw_stream.try_clone()?);
+            Ok(Connection { raw_stream, buf_reader, buf_writer })
         }
 
         fn close(&mut self) -> Result<(), io::Error> {
