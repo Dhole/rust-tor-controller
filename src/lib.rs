@@ -8,7 +8,9 @@ extern crate rand;
 extern crate timer;
 extern crate chrono;
 
+#[macro_use]
+pub mod utils;
+
 pub mod platform;
 pub mod control;
 pub mod process;
-pub mod utils;

@@ -48,7 +48,7 @@ macro_rules! re_cap_or_err {
 // Gives the $name found in $cap regex capture or returns Reply(MissingField) error
 macro_rules! cap_name_or_err {
     ($cap:expr, $name:expr) => (match $cap.name($name) {
-        Some(val) => val,
+        Some(val) => val.as_str(),
         None => {
             return Err(Error::ParseReply(ParseReplyError::MissingField));
         }

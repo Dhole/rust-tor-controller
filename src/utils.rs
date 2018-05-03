@@ -3,11 +3,12 @@ use std::process::Command;
 use regex;
 use regex::Regex;
 use std::string;
+use regex::Match;
 
 // Gives the $name found in $cap regex capture or returns MissingField error
 macro_rules! cap_name_or_err {
     ($cap:expr, $name:expr) => (match $cap.name($name) {
-        Some(val) => val,
+        Some(val) => val.as_str(),
         None => {
             return Err(Error::MissingField);
         }
@@ -67,8 +68,8 @@ pub fn parse_tor_version(tor_version_str: &str) -> Result<TorVersion, Error> {
     let minor = cap_name_or_err!(ver_cap, "minor");
     let micro = cap_name_or_err!(ver_cap, "micro");
     let patch_level = cap_name_or_err!(ver_cap, "patch_level");
-    let status_tag = ver_cap.name("status_tag");
-    let extra_info = ver_cap.name("extra_info");
+    let status_tag = ver_cap.name("status_tag").map( |m| m.as_str() );
+    let extra_info = ver_cap.name("extra_info").map( |m| m.as_str() );
 
     // At this point the parse should always be sucessfull becuse the regex limit the captured
     // strings to be integer numbers for major, minor, micro and patch_level.

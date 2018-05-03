@@ -140,13 +140,11 @@ impl TorProcess {
                 match line.split(' ').nth(0) {
                     Some("[notice]") => {
                         if let Some("Bootstrapped") = line.split(' ').nth(1) {
-                            let cap = re_bootstrap.captures(line)
+                            let perc = re_bootstrap.captures(line)
+                                .and_then(|c| c.name("perc"))
+                                .and_then( |pc| pc.as_str().parse::<u8>().ok())
                                 .ok_or(Error::InvalidBootstrapLine(line.to_string()))?;
-                            let perc_srt = cap.name("perc")
-                                .ok_or(Error::InvalidBootstrapLine(line.to_string()))?;
-                            let perc = perc_srt.parse::<u8>().map_err(|_| {
-                                Error::InvalidBootstrapLine(line.to_string())
-                            })?;
+
                             if perc >= completion_perc {
                                 break;
                             }

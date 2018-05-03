@@ -5,7 +5,7 @@ extern crate tor_controller;
 use tor_controller::control::Controller;
 
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
 
     let mut controller = Controller::from_port(9051).unwrap();
     controller.authenticate().unwrap();
