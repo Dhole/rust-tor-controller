@@ -2,7 +2,7 @@
 extern crate log;
 extern crate env_logger;
 extern crate regex;
-extern crate rustc_serialize;
+extern crate hex;
 extern crate crypto;
 extern crate rand;
 extern crate timer;

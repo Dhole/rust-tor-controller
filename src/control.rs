@@ -1,5 +1,5 @@
 extern crate regex;
-extern crate rustc_serialize;
+extern crate hex;
 extern crate crypto;
 extern crate rand;
 
@@ -17,8 +17,7 @@ use std::fs::File;
 use std::fmt;
 
 use regex::Regex;
-use rustc_serialize::hex;
-use rustc_serialize::hex::{ToHex, FromHex};
+use hex::FromHex;
 use crypto::hmac::Hmac;
 use crypto::sha2::Sha256;
 use crypto::mac::Mac;
@@ -528,7 +527,7 @@ impl<T: Read + Write> Controller<T> {
     // AUTHCHALLENGE
     pub fn cmd_authchallenge(&mut self, client_nonce: &[u8; 32]) -> Result<AuthChallenge, Error> {
         let reply = self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}",
-                                         client_nonce.to_hex())
+                                         hex::encode(client_nonce))
             .as_str())?;
         let re_authchallenge = Regex::new("^AUTHCHALLENGE \
                                            SERVERHASH=(?P<server_hash>[0-9A-F]{64}) \
@@ -538,11 +537,9 @@ impl<T: Read + Write> Controller<T> {
         let server_nonce = cap_name_or_err!(server_challenge, "server_nonce");
 
         let mut res = AuthChallenge {
-            server_hash: [0; 32],
-            server_nonce: [0; 32],
+            server_hash: FromHex::from_hex(server_hash)?,
+            server_nonce: FromHex::from_hex(server_nonce)?,
         };
-        res.server_hash.clone_from_slice(server_hash.from_hex()?.as_slice());
-        res.server_nonce.clone_from_slice(server_nonce.from_hex()?.as_slice());
 
         Ok(res)
     }
@@ -567,7 +564,7 @@ impl<T: Read + Write> Controller<T> {
 
     // AUTHENTICATE
     pub fn cmd_authenticate(&mut self, pwd: &[u8]) -> Result<Reply, Error> {
-        self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str())
+        self.raw_cmd(format!("AUTHENTICATE {}", hex::encode(pwd)).as_str())
     }
 
     // QUIT
