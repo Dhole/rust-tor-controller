@@ -2,7 +2,6 @@ extern crate regex;
 extern crate rustc_serialize;
 extern crate crypto;
 extern crate rand;
-extern crate unix_socket;
 
 use std::net::ToSocketAddrs;
 use std::num;
@@ -17,7 +16,6 @@ use std::io::{BufReader, BufRead, BufWriter};
 use std::fs::File;
 use std::fmt;
 
-use unix_socket::UnixStream;
 use regex::Regex;
 use rustc_serialize::hex;
 use rustc_serialize::hex::{ToHex, FromHex};
@@ -211,16 +209,16 @@ pub struct AddOnionReply {
     pub client_auths: Vec<(String, String)>,
 }
 
-struct Connection<T: Read + Write> {
-    raw_stream: T,
-    buf_reader: BufReader<T>,
-    buf_writer: BufWriter<T>,
+pub(crate) struct Connection<T: Read + Write> {
+    pub raw_stream: T,
+    pub buf_reader: BufReader<T>,
+    pub buf_writer: BufWriter<T>,
 }
 
 pub struct Controller<T: Read + Write> {
-    con: Connection<T>, /*    auth: Auth,
-                         *    connection: Connection,
-                         *    hash_pass: Option<&str>, */
+    pub(crate) con: Connection<T>, /*    auth: Auth,
+                                    *    connection: Connection,
+                                    *    hash_pass: Option<&str>, */
 }
 
 #[derive(Debug)]
@@ -325,23 +323,6 @@ impl Connection<TcpStream> {
     }
 }
 
-impl Connection<UnixStream> {
-    fn connect<P: AsRef<Path>>(path: P) -> Result<Connection<UnixStream>, io::Error> {
-        let raw_stream = try!(UnixStream::connect(path));
-        let buf_reader = BufReader::new(try!(raw_stream.try_clone()));
-        let buf_writer = BufWriter::new(try!(raw_stream.try_clone()));
-        Ok(Connection {
-            raw_stream: raw_stream,
-            buf_reader: buf_reader,
-            buf_writer: buf_writer,
-        })
-    }
-
-    fn close(&mut self) -> Result<(), io::Error> {
-        self.raw_stream.shutdown(Shutdown::Both)
-    }
-}
-
 impl Controller<TcpStream> {
     pub fn from_addr<A: ToSocketAddrs>(addr: A) -> Result<Controller<TcpStream>, io::Error> {
         Ok(Controller { con: try!(Connection::<TcpStream>::connect(addr)) })
@@ -349,16 +330,6 @@ impl Controller<TcpStream> {
 
     pub fn from_port(port: u16) -> Result<Controller<TcpStream>, io::Error> {
         Self::from_addr(("127.0.0.1", port))
-    }
-
-    pub fn close(&mut self) -> Result<(), io::Error> {
-        self.con.close()
-    }
-}
-
-impl Controller<UnixStream> {
-    pub fn from_socket_file<P: AsRef<Path>>(path: P) -> Result<Controller<UnixStream>, io::Error> {
-        Ok(Controller { con: try!(Connection::<UnixStream>::connect(path)) })
     }
 
     pub fn close(&mut self) -> Result<(), io::Error> {
