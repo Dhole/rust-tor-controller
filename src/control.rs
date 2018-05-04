@@ -201,8 +201,38 @@ impl fmt::Display for OnionClientAuth {
 }
 
 #[derive(Debug)]
+pub struct ServiceID(String);
+
+fn validate_sid(s: &str) {
+    let re: Regex = Regex::new("^[a-zA-Z2-7]{16}$").unwrap();
+    if !re.is_match(s) {
+        panic!("invalid ServiceID ".to_owned() + s)
+    }
+}
+
+impl ServiceID {
+    unsafe fn wrap(s: String) -> Self {
+        ServiceID(s)
+    }
+}
+
+impl<T: Into<String>> From<T> for ServiceID {
+    fn from(s: T) -> Self {
+        let st = s.into();
+        validate_sid(&st);
+        ServiceID(st)
+    }
+}
+
+impl<'a> AsRef<str> for ServiceID {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug)]
 pub struct AddOnionReply {
-    pub service_id: String,
+    pub service_id: ServiceID,
     pub sk: Option<String>,
     pub client_auths: Vec<(String, String)>,
 }
@@ -584,7 +614,7 @@ impl<T: Read + Write> Controller<T> {
         let cmd = format!("{}", add_onion);
         let reply = self.raw_cmd(cmd.as_str())?;
         let cap_service = re_cap_or_err!(re_service, reply.lines[0].reply.as_str());
-        let service_id = cap_name_or_err!(cap_service, "service_id").to_string();
+        let service_id = ServiceID(cap_name_or_err!(cap_service, "service_id").to_string());
 
         let mut skip = 1;
         let sk = match add_onion.key {
