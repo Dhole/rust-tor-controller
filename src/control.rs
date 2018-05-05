@@ -1,8 +1,7 @@
 extern crate regex;
-extern crate rustc_serialize;
+extern crate hex;
 extern crate crypto;
 extern crate rand;
-extern crate unix_socket;
 
 use std::net::ToSocketAddrs;
 use std::num;
@@ -17,10 +16,8 @@ use std::io::{BufReader, BufRead, BufWriter};
 use std::fs::File;
 use std::fmt;
 
-use unix_socket::UnixStream;
 use regex::Regex;
-use rustc_serialize::hex;
-use rustc_serialize::hex::{ToHex, FromHex};
+use hex::FromHex;
 use crypto::hmac::Hmac;
 use crypto::sha2::Sha256;
 use crypto::mac::Mac;
@@ -50,7 +47,7 @@ macro_rules! re_cap_or_err {
 // Gives the $name found in $cap regex capture or returns Reply(MissingField) error
 macro_rules! cap_name_or_err {
     ($cap:expr, $name:expr) => (match $cap.name($name) {
-        Some(val) => val,
+        Some(val) => val.as_str(),
         None => {
             return Err(Error::ParseReply(ParseReplyError::MissingField));
         }
@@ -122,20 +119,20 @@ pub struct AddOnion {
 
 impl fmt::Display for AddOnion {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        try!(write!(f, "ADD_ONION "));
-        try!(write!(f, "{}", self.key));
+        write!(f, "ADD_ONION ")?;
+        write!(f, "{}", self.key)?;
         if !self.flags.is_empty() {
-            try!(write!(f, " "));
-            try!(write_join(f, &self.flags, ","));
+            write!(f, " ")?;
+            write_join(f, &self.flags, ",")?;
         }
         for &(a, b) in &self.ports {
             match b {
-                None => try!(write!(f, " Port={}", a)),
-                Some(n) => try!(write!(f, " Port={},{}", a, n)),
+                None => write!(f, " Port={}", a)?,
+                Some(n) => write!(f, " Port={},{}", a, n)?,
             }
         }
         for client_auth in &self.client_auths {
-            try!(write!(f, " {}", client_auth));
+            write!(f, " {}", client_auth)?;
         }
         Ok(())
     }
@@ -196,9 +193,9 @@ pub struct OnionClientAuth {
 
 impl fmt::Display for OnionClientAuth {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        try!(write!(f, "ClientAuth={}", self.client_name));
+        write!(f, "ClientAuth={}", self.client_name)?;
         if let &Some(ref client_blob) = &self.client_blob {
-            try!(write!(f, ":{}", client_blob));
+            write!(f, ":{}", client_blob)?;
         }
         Ok(())
     }
@@ -211,16 +208,16 @@ pub struct AddOnionReply {
     pub client_auths: Vec<(String, String)>,
 }
 
-struct Connection<T: Read + Write> {
-    raw_stream: T,
-    buf_reader: BufReader<T>,
-    buf_writer: BufWriter<T>,
+pub(crate) struct Connection<T: Read + Write> {
+    pub raw_stream: T,
+    pub buf_reader: BufReader<T>,
+    pub buf_writer: BufWriter<T>,
 }
 
 pub struct Controller<T: Read + Write> {
-    con: Connection<T>, /*    auth: Auth,
-                         *    connection: Connection,
-                         *    hash_pass: Option<&str>, */
+    pub(crate) con: Connection<T>, /*    auth: Auth,
+                                    *    connection: Connection,
+                                    *    hash_pass: Option<&str>, */
 }
 
 #[derive(Debug)]
@@ -301,40 +298,19 @@ fn write_join<T: fmt::Display>(f: &mut fmt::Formatter, elems: &Vec<T>, sep: &str
         if first {
             first = false;
         } else {
-            try!(write!(f, "{}", sep));
+            write!(f, "{}", sep)?;
         }
-        try!(write!(f, "{}", e));
+        write!(f, "{}", e)?;
     }
     Ok(())
 }
 
 impl Connection<TcpStream> {
     fn connect<A: ToSocketAddrs>(addr: A) -> Result<Connection<TcpStream>, io::Error> {
-        let raw_stream = try!(TcpStream::connect(addr));
-        let buf_reader = BufReader::new(try!(raw_stream.try_clone()));
-        let buf_writer = BufWriter::new(try!(raw_stream.try_clone()));
-        Ok(Connection {
-            raw_stream: raw_stream,
-            buf_reader: buf_reader,
-            buf_writer: buf_writer,
-        })
-    }
-
-    fn close(&mut self) -> Result<(), io::Error> {
-        self.raw_stream.shutdown(Shutdown::Both)
-    }
-}
-
-impl Connection<UnixStream> {
-    fn connect<P: AsRef<Path>>(path: P) -> Result<Connection<UnixStream>, io::Error> {
-        let raw_stream = try!(UnixStream::connect(path));
-        let buf_reader = BufReader::new(try!(raw_stream.try_clone()));
-        let buf_writer = BufWriter::new(try!(raw_stream.try_clone()));
-        Ok(Connection {
-            raw_stream: raw_stream,
-            buf_reader: buf_reader,
-            buf_writer: buf_writer,
-        })
+        let raw_stream = TcpStream::connect(addr)?;
+        let buf_reader = BufReader::new(raw_stream.try_clone()?);
+        let buf_writer = BufWriter::new(raw_stream.try_clone()?);
+        Ok(Connection { raw_stream, buf_reader, buf_writer })
     }
 
     fn close(&mut self) -> Result<(), io::Error> {
@@ -344,7 +320,7 @@ impl Connection<UnixStream> {
 
 impl Controller<TcpStream> {
     pub fn from_addr<A: ToSocketAddrs>(addr: A) -> Result<Controller<TcpStream>, io::Error> {
-        Ok(Controller { con: try!(Connection::<TcpStream>::connect(addr)) })
+        Ok(Controller { con: Connection::<TcpStream>::connect(addr)? })
     }
 
     pub fn from_port(port: u16) -> Result<Controller<TcpStream>, io::Error> {
@@ -356,29 +332,19 @@ impl Controller<TcpStream> {
     }
 }
 
-impl Controller<UnixStream> {
-    pub fn from_socket_file<P: AsRef<Path>>(path: P) -> Result<Controller<UnixStream>, io::Error> {
-        Ok(Controller { con: try!(Connection::<UnixStream>::connect(path)) })
-    }
-
-    pub fn close(&mut self) -> Result<(), io::Error> {
-        self.con.close()
-    }
-}
-
 impl<T: Read + Write> Controller<T> {
     pub fn authenticate(&mut self) -> Result<(), Error> {
-        let protocolinfo = try!(self.cmd_protocolinfo());
+        let protocolinfo = self.cmd_protocolinfo()?;
 
         // We have no intention to support COOKIE method, from the spec: "the COOKIE authentication
         // method has been deprecated and will be removed from a future version of Tor."
 
         let mut rng = rand::thread_rng();
         let client_nonce = rng.gen::<[u8; 32]>();
-        let authchallenge = try!(self.cmd_authchallenge(&client_nonce));
-        let mut cookie_file = try!(File::open(protocolinfo.cookie_files[0].clone()));
+        let authchallenge = self.cmd_authchallenge(&client_nonce)?;
+        let mut cookie_file = File::open(protocolinfo.cookie_files[0].clone())?;
         let mut cookie = Vec::new();
-        try!(cookie_file.read_to_end(&mut cookie));
+        cookie_file.read_to_end(&mut cookie)?;
         let sha256 = Sha256::new();
 
         // First we compute the hmac that the server should have sent us, to check its validity.
@@ -416,9 +382,9 @@ impl<T: Read + Write> Controller<T> {
 
     pub fn raw_cmd(&mut self, cmd: &str) -> Result<Reply, Error> {
         debug!("{}", cmd);
-        try!(self.con.buf_writer.write_all(cmd.as_bytes()));
-        try!(self.con.buf_writer.write_all(b"\r\n"));
-        try!(self.con.buf_writer.flush());
+        self.con.buf_writer.write_all(cmd.as_bytes())?;
+        self.con.buf_writer.write_all(b"\r\n")?;
+        self.con.buf_writer.flush()?;
 
         let mut raw_line = String::new();
         let mut reply_lines = Vec::new();
@@ -428,7 +394,7 @@ impl<T: Read + Write> Controller<T> {
         let mut status_code_str = String::new();
         let mut status_code = 0 as u16;
 
-        while try!(self.con.buf_reader.read_line(&mut raw_line)) > 0 {
+        while self.con.buf_reader.read_line(&mut raw_line)? > 0 {
             if multi_line {
                 if raw_line == ".\r\n" {
                     multi_line = false;
@@ -461,8 +427,8 @@ impl<T: Read + Write> Controller<T> {
 
                 if status_code_str == "" {
                     status_code_str = String::from(code);
-                    status_code = try!(status_code_str.parse::<u16>()
-                        .map_err(|err| Error::RawReply(RawReplyError::NonNumericStatusCode(err))));
+                    status_code = status_code_str.parse::<u16>()
+                        .map_err(|err| Error::RawReply(RawReplyError::NonNumericStatusCode(err)))?;
                 } else {
                     // TODO Parse Async replies here
                     if code != status_code_str {
@@ -499,19 +465,19 @@ impl<T: Read + Write> Controller<T> {
 
     // PROTOCOLINFO
     pub fn cmd_protocolinfo(&mut self) -> Result<ProtocolInfo, Error> {
-        let reply = try!(self.raw_cmd("PROTOCOLINFO"));
+        let reply = self.raw_cmd("PROTOCOLINFO")?;
         // regex for QuotedString = (\\.|[^\"])*
-        let re_protocolinfo = try!(Regex::new(r"^PROTOCOLINFO (?P<version>[0-9]+)$"));
-        let re_tor_version = try!(Regex::new("^VERSION Tor=\"(?P<tor_version>(\\.|[^\"])*)\"[ ]*\
-                                        (?P<opt_arguments>.*)$"));
-        let re_auth = try!(Regex::new("^AUTH METHODS=(?P<auth_methods>[A-Z,]+)[ ]*\
-                                 (?P<maybe_cookie_files>.*)$"));
-        let re_cookie_file = try!(Regex::new("COOKIEFILE=\"(?P<cookie_file>(\\.|[^\"])*)\""));
+        let re_protocolinfo = Regex::new(r"^PROTOCOLINFO (?P<version>[0-9]+)$")?;
+        let re_tor_version = Regex::new("^VERSION Tor=\"(?P<tor_version>(\\.|[^\"])*)\"[ ]*\
+                                        (?P<opt_arguments>.*)$")?;
+        let re_auth = Regex::new("^AUTH METHODS=(?P<auth_methods>[A-Z,]+)[ ]*\
+                                 (?P<maybe_cookie_files>.*)$")?;
+        let re_cookie_file = Regex::new("COOKIEFILE=\"(?P<cookie_file>(\\.|[^\"])*)\"")?;
 
         let prot_inf = re_cap_or_err!(re_protocolinfo, reply.lines[0].reply.as_str());
         let version_str = cap_name_or_err!(prot_inf, "version");
-        let version = try!(version_str.parse::<u8>()
-            .map_err(|err| Error::ParseReply(ParseReplyError::ParseIntError(err))));
+        let version = version_str.parse::<u8>()
+            .map_err(|err| Error::ParseReply(ParseReplyError::ParseIntError(err)))?;
         match version {
             1 => (),
             _ => panic!("Version {} not supported", version),
@@ -560,22 +526,20 @@ impl<T: Read + Write> Controller<T> {
 
     // AUTHCHALLENGE
     pub fn cmd_authchallenge(&mut self, client_nonce: &[u8; 32]) -> Result<AuthChallenge, Error> {
-        let reply = try!(self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}",
-                                              client_nonce.to_hex())
-                                          .as_str()));
-        let re_authchallenge = try!(Regex::new("^AUTHCHALLENGE \
+        let reply = self.raw_cmd(format!("AUTHCHALLENGE SAFECOOKIE {}",
+                                         hex::encode(client_nonce))
+            .as_str())?;
+        let re_authchallenge = Regex::new("^AUTHCHALLENGE \
                                            SERVERHASH=(?P<server_hash>[0-9A-F]{64}) \
-                                           SERVERNONCE=(?P<server_nonce>[0-9A-F]{64})$"));
+                                           SERVERNONCE=(?P<server_nonce>[0-9A-F]{64})$")?;
         let server_challenge = re_cap_or_err!(re_authchallenge, reply.lines[0].reply.as_str());
         let server_hash = cap_name_or_err!(server_challenge, "server_hash");
         let server_nonce = cap_name_or_err!(server_challenge, "server_nonce");
 
         let mut res = AuthChallenge {
-            server_hash: [0; 32],
-            server_nonce: [0; 32],
+            server_hash: FromHex::from_hex(server_hash)?,
+            server_nonce: FromHex::from_hex(server_nonce)?,
         };
-        res.server_hash.clone_from_slice(try!(server_hash.from_hex()).as_slice());
-        res.server_nonce.clone_from_slice(try!(server_nonce.from_hex()).as_slice());
 
         Ok(res)
     }
@@ -586,7 +550,7 @@ impl<T: Read + Write> Controller<T> {
     // value (the 'keyword=' part is stripped).
     // GETINFO
     pub fn cmd_getinfo(&mut self, info_key: &str) -> Result<String, Error> {
-        let reply = try!(self.raw_cmd(format!("GETINFO {}", info_key).as_str()));
+        let reply = self.raw_cmd(format!("GETINFO {}", info_key).as_str())?;
         let reply_line = &reply.lines[0];
         if !(reply_line.reply.starts_with(info_key) &&
              reply_line.reply.chars().nth(info_key.len()) == Some('=')) {
@@ -600,7 +564,7 @@ impl<T: Read + Write> Controller<T> {
 
     // AUTHENTICATE
     pub fn cmd_authenticate(&mut self, pwd: &[u8]) -> Result<Reply, Error> {
-        self.raw_cmd(format!("AUTHENTICATE {}", pwd.to_hex()).as_str())
+        self.raw_cmd(format!("AUTHENTICATE {}", hex::encode(pwd)).as_str())
     }
 
     // QUIT
@@ -614,12 +578,12 @@ impl<T: Read + Write> Controller<T> {
         //    return Err(OnionError::NoPortGiven);
         // }
         // TODO: check client_auths.ClientName(s) is from 1 to 16 chars from A-Za-z0-9+-_
-        let re_service = try!(Regex::new(r"^ServiceID=(?P<service_id>[^ ]+)$"));
-        let re_sk = try!(Regex::new(r"^PrivateKey=(?P<key_type>[^ ]+):(?P<sk>[^ ]+)$"));
-        let re_client_auth = try!(Regex::new("^ClientAuth=(?P<client_name>[^ ]+):\
-                                             (?P<client_blob>[^ ]+)$"));
+        let re_service = Regex::new(r"^ServiceID=(?P<service_id>[^ ]+)$")?;
+        let re_sk = Regex::new(r"^PrivateKey=(?P<key_type>[^ ]+):(?P<sk>[^ ]+)$")?;
+        let re_client_auth = Regex::new("^ClientAuth=(?P<client_name>[^ ]+):\
+                                             (?P<client_blob>[^ ]+)$")?;
         let cmd = format!("{}", add_onion);
-        let reply = try!(self.raw_cmd(cmd.as_str()));
+        let reply = self.raw_cmd(cmd.as_str())?;
         let cap_service = re_cap_or_err!(re_service, reply.lines[0].reply.as_str());
         let service_id = cap_name_or_err!(cap_service, "service_id").to_string();
 
@@ -645,11 +609,7 @@ impl<T: Read + Write> Controller<T> {
             let client_blob = cap_name_or_err!(cap_client_auth, "client_blob").to_string();
             client_auths.push((client_name, client_blob));
         }
-        Ok(AddOnionReply {
-            service_id: service_id,
-            sk: sk,
-            client_auths: client_auths,
-        })
+        Ok(AddOnionReply { service_id, sk, client_auths })
     }
     // DEL_ONION
 

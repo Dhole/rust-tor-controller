@@ -3,11 +3,12 @@ use std::process::Command;
 use regex;
 use regex::Regex;
 use std::string;
+use regex::Match;
 
 // Gives the $name found in $cap regex capture or returns MissingField error
 macro_rules! cap_name_or_err {
     ($cap:expr, $name:expr) => (match $cap.name($name) {
-        Some(val) => val,
+        Some(val) => val.as_str(),
         None => {
             return Err(Error::MissingField);
         }
@@ -38,12 +39,12 @@ pub fn get_system_tor_version(tor_cmd: Option<&str>) -> Result<TorVersion, Error
     let tor_cmd = tor_cmd.unwrap_or("tor");
     let begin = "Tor version ";
     let end = ".\n";
-    let output = try!(Command::new(tor_cmd)
-                          .arg("--version")
-                          .output()
-                          .map_err(|err| Error::Command(err)));
-    let tor_version_str = try!(String::from_utf8(output.stdout)
-                                   .map_err(|err| Error::CommandOutput(err)));
+    let output = Command::new(tor_cmd)
+        .arg("--version")
+        .output()
+        .map_err(|err| Error::Command(err))?;
+    let tor_version_str = String::from_utf8(output.stdout)
+        .map_err(|err| Error::CommandOutput(err))?;
     if tor_version_str.len() < begin.len() + end.len() {
         return Err(Error::TorVersionTooShort);
     }
@@ -52,13 +53,13 @@ pub fn get_system_tor_version(tor_cmd: Option<&str>) -> Result<TorVersion, Error
 }
 
 pub fn parse_tor_version(tor_version_str: &str) -> Result<TorVersion, Error> {
-    let re_tor_version_details = try!(Regex::new("^(?P<major>[0-9]+)[.]\
+    let re_tor_version_details = Regex::new("^(?P<major>[0-9]+)[.]\
                                              (?P<minor>[0-9]+)[.]\
                                              (?P<micro>[0-9]+)[.]\
                                              (?P<patch_level>[0-9]+)\
                                              (?P<status_tag>[-][^ ]*)?\
                                              (?P<extra_info> [(].*[)])?$")
-                                          .map_err(|err| Error::Regex(err)));
+        .map_err(|err| Error::Regex(err))?;
     let ver_cap = match re_tor_version_details.captures(tor_version_str) {
         Some(cap) => cap,
         None => return Err(Error::RegexCapture),
@@ -67,8 +68,8 @@ pub fn parse_tor_version(tor_version_str: &str) -> Result<TorVersion, Error> {
     let minor = cap_name_or_err!(ver_cap, "minor");
     let micro = cap_name_or_err!(ver_cap, "micro");
     let patch_level = cap_name_or_err!(ver_cap, "patch_level");
-    let status_tag = ver_cap.name("status_tag");
-    let extra_info = ver_cap.name("extra_info");
+    let status_tag = ver_cap.name("status_tag").map( |m| m.as_str() );
+    let extra_info = ver_cap.name("extra_info").map( |m| m.as_str() );
 
     // At this point the parse should always be sucessfull becuse the regex limit the captured
     // strings to be integer numbers for major, minor, micro and patch_level.

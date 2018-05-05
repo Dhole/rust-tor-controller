@@ -82,12 +82,12 @@ impl TorProcess {
         if let Some(ref torrc_path) = self.torrc_path {
             tor.args(&vec!["-f", torrc_path]);
         }
-        let mut tor_process = try!(tor.args(&self.args)
-                                      .stdin(Stdio::piped())
-                                      .stdout(Stdio::piped())
-                                      .stderr(Stdio::piped())
-                                      .spawn()
-                                      .map_err(|err| Error::Process(err)));
+        let mut tor_process = tor.args(&self.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| Error::Process(err))?;
         let stdout = BufReader::new(tor_process.stdout.take().unwrap());
 
         self.process = Some(tor_process);
@@ -122,14 +122,14 @@ impl TorProcess {
     fn parse_tor_stdout(mut stdout: BufReader<ChildStdout>,
                         completion_perc: u8)
                         -> Result<BufReader<ChildStdout>, Error> {
-        let re_bootstrap = try!(Regex::new(r"^\[notice\] Bootstrapped (?P<perc>[0-9]+)%: ")
-                                    .map_err(|err| Error::Regex(err)));
+        let re_bootstrap = Regex::new(r"^\[notice\] Bootstrapped (?P<perc>[0-9]+)%: ")
+            .map_err(|err| Error::Regex(err))?;
 
         let timestamp_len = "May 16 02:50:08.792".len();
         let mut warnings = Vec::new();
         let mut raw_line = String::new();
 
-        while try!(stdout.read_line(&mut raw_line).map_err(|err| Error::Process(err))) > 0 {
+        while stdout.read_line(&mut raw_line).map_err(|err| Error::Process(err))? > 0 {
             {
                 if raw_line.len() < timestamp_len + 1 {
                     return Err(Error::InvalidLogLine);
@@ -140,13 +140,11 @@ impl TorProcess {
                 match line.split(' ').nth(0) {
                     Some("[notice]") => {
                         if let Some("Bootstrapped") = line.split(' ').nth(1) {
-                            let cap = try!(re_bootstrap.captures(line)
-                                        .ok_or(Error::InvalidBootstrapLine(line.to_string())));
-                            let perc_srt = try!(cap.name("perc")
-                                        .ok_or(Error::InvalidBootstrapLine(line.to_string())));
-                            let perc = try!(perc_srt.parse::<u8>().map_err(|_| {
-                                Error::InvalidBootstrapLine(line.to_string())
-                            }));
+                            let perc = re_bootstrap.captures(line)
+                                .and_then(|c| c.name("perc"))
+                                .and_then( |pc| pc.as_str().parse::<u8>().ok())
+                                .ok_or(Error::InvalidBootstrapLine(line.to_string()))?;
+
                             if perc >= completion_perc {
                                 break;
                             }
@@ -164,7 +162,7 @@ impl TorProcess {
 
     pub fn kill(&mut self) -> Result<(), Error> {
         if let Some(ref mut process) = self.process {
-            Ok(try!(process.kill().map_err(|err| Error::Process(err))))
+            Ok(process.kill().map_err(|err| Error::Process(err))?)
         } else {
             Err(Error::ProcessNotStarted)
         }
