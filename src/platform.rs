@@ -17,9 +17,7 @@ mod unix {
         }
 
         pub fn close(&mut self) -> Result<(), io::Error> {
-            unsafe {
-                self.con.close()
-            }
+            self.con.close()
         }
     }
 
