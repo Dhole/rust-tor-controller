@@ -3,7 +3,6 @@ use std::process::Command;
 use regex;
 use regex::Regex;
 use std::string;
-use regex::Match;
 
 // Gives the $name found in $cap regex capture or returns MissingField error
 macro_rules! cap_name_or_err {

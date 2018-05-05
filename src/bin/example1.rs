@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate env_logger;
 extern crate tor_controller;
 

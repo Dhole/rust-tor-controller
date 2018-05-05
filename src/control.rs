@@ -5,7 +5,6 @@ extern crate rand;
 
 use std::net::ToSocketAddrs;
 use std::num;
-use std::path::Path;
 use std::net::{TcpStream, Shutdown};
 use std::io;
 use std::io::{Read, Write};
@@ -25,14 +24,14 @@ use crypto::util::fixed_time_eq;
 use rand::Rng;
 
 // Gives val from Some(val) or returns Err(Error::Reply($rep_err))
-macro_rules! some_or_rep_err {
-    ($expr:expr, $rep_err:expr) => (match $expr {
-        Some(val) => val,
-        None => {
-            return Err(Error::Reply($rep_err));
-        }
-    })
-}
+// macro_rules! some_or_rep_err {
+//     ($expr:expr, $rep_err:expr) => (match $expr {
+//         Some(val) => val,
+//         None => {
+//             return Err(Error::Reply($rep_err));
+//         }
+//     })
+// }
 
 // Gives the $re regex capture of $str or returns Reply(RegexCapture) error
 macro_rules! re_cap_or_err {
@@ -536,7 +535,7 @@ impl<T: Read + Write> Controller<T> {
         let server_hash = cap_name_or_err!(server_challenge, "server_hash");
         let server_nonce = cap_name_or_err!(server_challenge, "server_nonce");
 
-        let mut res = AuthChallenge {
+        let res = AuthChallenge {
             server_hash: FromHex::from_hex(server_hash)?,
             server_nonce: FromHex::from_hex(server_nonce)?,
         };
