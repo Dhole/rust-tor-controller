@@ -643,7 +643,7 @@ impl<T: Read + Write> Controller<T> {
 
     // DEL_ONION
     pub fn cmd_del_onion(&mut self, service_id: ServiceID) -> Result<(), Error> {
-        self.raw_cmd(&("DEL_ONION ".to_owned() + service_id.as_ref() + "\r\n")).map(|_|())
+        self.raw_cmd(&format!("DEL_ONION {}", service_id.as_ref())).map(|_|())
     }
 
     // SETCONF
