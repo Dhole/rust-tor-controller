@@ -211,7 +211,7 @@ fn validate_sid(s: &str) {
 }
 
 impl ServiceID {
-    unsafe fn wrap(s: String) -> Self {
+    fn wrap(s: String) -> Self {
         ServiceID(s)
     }
 }
