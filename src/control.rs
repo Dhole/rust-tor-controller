@@ -1,8 +1,4 @@
-extern crate regex;
-extern crate hex;
-extern crate crypto;
-extern crate rand;
-
+#![forbid(unsafe_code)]
 use std::net::ToSocketAddrs;
 use std::num;
 use std::net::{TcpStream, Shutdown};
