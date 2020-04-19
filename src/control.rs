@@ -1,13 +1,13 @@
 #![forbid(unsafe_code)]
 use std::net::ToSocketAddrs;
 use std::num;
-use std::net::{TcpStream, Shutdown};
+use std::net::{IpAddr, TcpStream, Shutdown};
 use std::io;
 use std::io::{Read, Write};
 // use std::str;
 use std::io::{BufReader, BufRead, BufWriter};
-// use std::option::Option;
-// use std::collections::HashMap;
+use std::option::Option;
+use std::collections::HashMap;
 use std::fs::File;
 use std::fmt;
 
@@ -569,11 +569,9 @@ impl<T: Read + Write> Controller<T> {
         Ok(res)
     }
 
-    // So far we only support one keyword.
-    // TODO: Supporting multiple keywords would imply returning a dictionary.
+    // GETINFO
     // The output is not parsed (you are on your own), it's just a string containing the return
     // value (the 'keyword=' part is stripped).
-    // GETINFO
     pub fn cmd_getinfo(&mut self, info_key: &str) -> Result<String, Error> {
         let reply = self.raw_cmd(format!("GETINFO {}", info_key).as_str())?;
         let reply_line = &reply.lines[0];
@@ -585,6 +583,38 @@ impl<T: Read + Write> Controller<T> {
             &Some(ref data) => Ok(data.clone()),
             &None => Ok(reply_line.reply[info_key.len() + 1..].to_string()),
         }
+    }
+
+    pub fn cmd_getinfos(&mut self, args: &[&str]) -> Result<HashMap<String,Vec<String>>, Error> {
+        let mut req = String::from("GETINFO");
+        let mut res: HashMap<String, Vec<String>> = HashMap::new();
+
+        for arg in args.iter() {
+            req.push_str(&format!(" {}", arg));
+        }
+
+        for line in self.raw_cmd(&req)?.lines.iter() {
+            if line.reply == "OK" {
+                return Ok(res);
+            }
+
+            let key_value_parts: Vec<&str> = line.reply.splitn(2, '=').collect();
+            let key = key_value_parts[0].to_string();
+
+            let mut value: Vec<String> = match res.get(&key) {
+                Some(val) => val.to_owned(),
+                None => Vec::new()
+            };
+
+            if key_value_parts.len() > 1 {
+                value.push(key_value_parts[1].to_string());
+            }
+
+            res.insert(key, value);
+        }
+
+        // OK not returned
+        return Err(Error::ParseReply(ParseReplyError::KeyNotFound));
     }
 
     // AUTHENTICATE
@@ -642,18 +672,90 @@ impl<T: Read + Write> Controller<T> {
         self.raw_cmd(&format!("DEL_ONION {}", service_id.as_ref())).map(|_|())
     }
 
-    // SETCONF
-    // RESETCONF
-    // GETCONF
-    // LOADCONF
     // SAVECONF
+    pub fn cmd_saveconf(&mut self, force: bool) -> Result<(), Error> {
+        self.raw_cmd(&format!("SAVECONF{}", if force {" FORCE"} else {""})).map(|_|())
+    }
+
+    // GETCONF
+    pub fn cmd_getconf(&mut self, args: &[&str]) -> Result<HashMap<String, Vec<String>>, Error> {
+        let mut req = String::from("GETCONF");
+        let mut res: HashMap<String, Vec<String>> = HashMap::new();
+
+        for arg in args.iter() {
+            req.push_str(&format!(" {}", arg));
+        }
+
+        for line in self.raw_cmd(&req)?.lines.iter() {
+            let key_value_parts: Vec<&str> = line.reply.splitn(2, '=').collect();
+            let key = key_value_parts[0].to_string();
+
+            let mut value: Vec<String> = match res.get(&key) {
+                Some(val) => val.to_owned(),
+                None => Vec::new()
+            };
+
+            if key_value_parts.len() > 1 {
+                value.push(key_value_parts[1].to_string());
+            }
+
+            res.insert(key, value);
+        }
+
+        return Ok(res);
+    }
+
+    // SETCONF
+    pub fn cmd_setconf(&mut self, args: &[(&str, &str)]) -> Result<(), Error> {
+        self.cmd_key_val_list("SETCONF", args)
+    }
+
+    // RESETCONF
+    pub fn cmd_resetconf(&mut self, args: &[(&str, &str)]) -> Result<(), Error> {
+        self.cmd_key_val_list("RESETCONF", args)
+    }
+
+    // LOADCONF
+    pub fn cmd_loadconf(&mut self, conf: &str) -> Result<(), Error> {
+        self.raw_cmd(&format!("+LOADCONF\r\n{}\r\n.", conf)).map(|_|())
+    }
+
+    fn cmd_key_val_list(&mut self, cmd: &str, args: &[(&str, &str)]) -> Result<(), Error> {
+        let mut req = String::from(cmd);
+        for (key, val) in args {
+            req.push_str(&format!(" {}={}", key, val));
+        }
+        return self.raw_cmd(&req).map(|_|())
+    }
+
+    // MAPADDRESS
+    pub fn cmd_mapaddress(&mut self, vars: &[(&IpAddr, &str)]) -> Result<(), Error> {
+        let mut req = String::from("MAPADDRESS");
+        for (key, val) in vars {
+            req.push_str(&format!(" {}={}", key, val));
+        }
+        self.raw_cmd(&req).map(|_|())
+    }
+
+    // TAKEOWNERSHIP
+    pub fn cmd_takeownership(&mut self) -> Result<(), Error> {
+        self.raw_cmd("TAKEOWNERSHIP").map(|_|())
+    }
+
+    // DROPOWNERSHIP
+    pub fn cmd_dropownership(&mut self) -> Result<(), Error> {
+        self.raw_cmd("DROPOWNERSHIP").map(|_|())
+    }
+
+    // DROPGUARDS
+    pub fn cmd_dropguards(&mut self) -> Result<(), Error> {
+        self.raw_cmd("DROPGUARDS").map(|_|())
+    }
 
     // SETEVENTS
     // SIGNAL
-    // MAPADDRESS
     // EXTENDCIRCUIT
     // SETCIRCUITPURPOSE
-    // SETROUTERPURPOSE
     // ATTACHSTREAM
     // POSTDESCRIPTOR
     // REDIRECTSTREAM
@@ -661,8 +763,6 @@ impl<T: Read + Write> Controller<T> {
     // CLOSECIRCUIT
     // USEFEATURE
     // RESOLVE
-    // TAKEOWNERSHIP
-    // DROPGUARDS
     // HSFETCH
     // HSPOST
 }
